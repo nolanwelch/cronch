@@ -32,3 +32,16 @@ pub fn key_size(scheme: KeyScheme) -> Int {
     Ed25519 -> 32
   }
 }
+
+/// The lowercase prefix used in address strings, e.g. `"ed25519"`.
+pub fn scheme_name(scheme: KeyScheme) -> String {
+  case scheme {
+    Ed25519 -> "ed25519"
+  }
+}
+
+/// All currently registered key schemes. Used for address parsing so new
+/// schemes are automatically tried once added here.
+pub fn all_schemes() -> List(KeyScheme) {
+  [Ed25519]
+}
