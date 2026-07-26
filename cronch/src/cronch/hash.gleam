@@ -8,6 +8,7 @@
 /// function produced a given address. A consumer must check the prefix before
 /// interpreting the bytes.
 import cronch/digest.{type Digest, type HashAlgorithm, Digest}
+import cronch/rewrite.{type Rule}
 import cronch/serialize
 import cronch/term.{type Term}
 import gleam/bit_array
@@ -16,6 +17,13 @@ import gleam/string
 /// Hash a term's canonical bytes with the given algorithm.
 pub fn hash(algo: HashAlgorithm, t: Term) -> Digest {
   digest.hash_bytes(algo, serialize.encode(t))
+}
+
+/// Hash a rule set's canonical bytes with the given algorithm. A rule set
+/// is content-addressed the same way a term is -- see
+/// serialize.encode_rule_set for the wire format.
+pub fn hash_rule_set(algo: HashAlgorithm, rules: List(Rule)) -> Digest {
+  digest.hash_bytes(algo, serialize.encode_rule_set(rules))
 }
 
 /// Self-describing string address for an already-computed digest.

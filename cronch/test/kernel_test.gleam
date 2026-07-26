@@ -1,6 +1,7 @@
 import cronch/digest
 import cronch/kernel
 import cronch/pubkey
+import cronch/rewrite
 import cronch/term
 import gleam/list
 import gleam/option.{None, Some}
@@ -9,16 +10,16 @@ import gleeunit/should
 // ── helpers ───────────────────────────────────────────────────────────────────
 
 fn no_store() {
-  kernel.no_store()
+  kernel.env_from_store(kernel.no_store())
 }
 
 fn make_store(entries: List(#(digest.Digest, term.Term))) {
-  fn(d: digest.Digest) {
+  kernel.env_from_store(fn(d: digest.Digest) {
     case list.find(entries, fn(e) { e.0 == d }) {
       Ok(#(_, t)) -> Some(t)
       Error(_) -> None
     }
-  }
+  })
 }
 
 fn fake_digest(b: Int) -> digest.Digest {
@@ -157,15 +158,15 @@ pub fn beta_no_capture_test() {
 // ── whnf ──────────────────────────────────────────────────────────────────────
 
 pub fn whnf_sort_is_stuck_test() {
-  kernel.whnf(no_store(), term.Sort(0))
-  |> should.equal(term.Sort(0))
+  kernel.whnf(no_store(), kernel.test_fuel, term.Sort(0))
+  |> should.equal(Ok(term.Sort(0)))
 }
 
 pub fn whnf_beta_reduces_test() {
   // App(Lam(Sort(0), Var(0)), Sort(3)) --> Sort(3)
   let id = term.Lam(term.Sort(0), term.Var(0))
-  kernel.whnf(no_store(), term.App(id, term.Sort(3)))
-  |> should.equal(term.Sort(3))
+  kernel.whnf(no_store(), kernel.test_fuel, term.App(id, term.Sort(3)))
+  |> should.equal(Ok(term.Sort(3)))
 }
 
 pub fn whnf_nested_beta_test() {
@@ -173,51 +174,51 @@ pub fn whnf_nested_beta_test() {
   // App(App(K, Sort(1)), Sort(2)) --> Sort(1)
   let k = term.Lam(term.Sort(0), term.Lam(term.Sort(0), term.Var(1)))
   let t = term.App(term.App(k, term.Sort(1)), term.Sort(2))
-  kernel.whnf(no_store(), t)
-  |> should.equal(term.Sort(1))
+  kernel.whnf(no_store(), kernel.test_fuel, t)
+  |> should.equal(Ok(term.Sort(1)))
 }
 
 pub fn whnf_resolves_const_test() {
   let d = fake_digest(10)
   let store = make_store([#(d, term.Sort(0))])
-  kernel.whnf(store, term.Const(d))
-  |> should.equal(term.Sort(0))
+  kernel.whnf(store, kernel.test_fuel, term.Const(d))
+  |> should.equal(Ok(term.Sort(0)))
 }
 
 pub fn whnf_unresolvable_const_is_stuck_test() {
   let d = fake_digest(11)
-  kernel.whnf(no_store(), term.Const(d))
-  |> should.equal(term.Const(d))
+  kernel.whnf(no_store(), kernel.test_fuel, term.Const(d))
+  |> should.equal(Ok(term.Const(d)))
 }
 
 pub fn whnf_does_not_reduce_under_binder_test() {
   // Lam body is a redex but whnf does not go under binders
   let id = term.Lam(term.Sort(0), term.Var(0))
   let t = term.Lam(term.Sort(0), term.App(id, term.Var(0)))
-  kernel.whnf(no_store(), t)
-  |> should.equal(t)
+  kernel.whnf(no_store(), kernel.test_fuel, t)
+  |> should.equal(Ok(t))
 }
 
 // ── normalize ─────────────────────────────────────────────────────────────────
 
 pub fn normalize_sort_test() {
-  kernel.normalize(no_store(), term.Sort(0))
-  |> should.equal(term.Sort(0))
+  kernel.normalize(no_store(), kernel.test_fuel, term.Sort(0))
+  |> should.equal(Ok(term.Sort(0)))
 }
 
 pub fn normalize_reduces_inside_lam_test() {
   let id = term.Lam(term.Sort(0), term.Var(0))
   // Lam(Sort(0), App(id, Var(0))) -- body reduces to Var(0)
   let t = term.Lam(term.Sort(0), term.App(id, term.Var(0)))
-  kernel.normalize(no_store(), t)
-  |> should.equal(term.Lam(term.Sort(0), term.Var(0)))
+  kernel.normalize(no_store(), kernel.test_fuel, t)
+  |> should.equal(Ok(term.Lam(term.Sort(0), term.Var(0))))
 }
 
 pub fn normalize_reduces_inside_eq_test() {
   let id = term.Lam(term.Sort(0), term.Var(0))
   let t = term.Eq(term.Sort(0), term.App(id, term.Sort(0)), term.Sort(0))
-  kernel.normalize(no_store(), t)
-  |> should.equal(term.Eq(term.Sort(0), term.Sort(0), term.Sort(0)))
+  kernel.normalize(no_store(), kernel.test_fuel, t)
+  |> should.equal(Ok(term.Eq(term.Sort(0), term.Sort(0), term.Sort(0))))
 }
 
 pub fn normalize_trusted_is_inert_test() {
@@ -226,34 +227,34 @@ pub fn normalize_trusted_is_inert_test() {
   let id = term.Lam(term.Sort(0), term.Var(0))
   // Trusted arg has a redex; normalize reduces it but the Trusted node stays
   let node = term.Trusted(host, proc, term.App(id, term.Sort(0)), term.Sort(0))
-  kernel.normalize(no_store(), node)
-  |> should.equal(term.Trusted(host, proc, term.Sort(0), term.Sort(0)))
+  kernel.normalize(no_store(), kernel.test_fuel, node)
+  |> should.equal(Ok(term.Trusted(host, proc, term.Sort(0), term.Sort(0))))
 }
 
 // ── def_eq ────────────────────────────────────────────────────────────────────
 
 pub fn def_eq_reflexive_sort_test() {
-  kernel.def_eq(no_store(), term.Sort(0), term.Sort(0))
-  |> should.be_true
+  kernel.def_eq(no_store(), kernel.test_fuel, term.Sort(0), term.Sort(0))
+  |> should.equal(Ok(True))
 }
 
 pub fn def_eq_different_sorts_test() {
-  kernel.def_eq(no_store(), term.Sort(0), term.Sort(1))
-  |> should.be_false
+  kernel.def_eq(no_store(), kernel.test_fuel, term.Sort(0), term.Sort(1))
+  |> should.equal(Ok(False))
 }
 
 pub fn def_eq_beta_test() {
   let id = term.Lam(term.Sort(0), term.Var(0))
   let redex = term.App(id, term.Sort(3))
-  kernel.def_eq(no_store(), redex, term.Sort(3))
-  |> should.be_true
+  kernel.def_eq(no_store(), kernel.test_fuel, redex, term.Sort(3))
+  |> should.equal(Ok(True))
 }
 
 pub fn def_eq_delta_test() {
   let d = fake_digest(20)
   let store = make_store([#(d, term.Pi(term.Sort(0), term.Sort(0)))])
-  kernel.def_eq(store, term.Const(d), term.Pi(term.Sort(0), term.Sort(0)))
-  |> should.be_true
+  kernel.def_eq(store, kernel.test_fuel, term.Const(d), term.Pi(term.Sort(0), term.Sort(0)))
+  |> should.equal(Ok(True))
 }
 
 pub fn def_eq_trusted_structural_test() {
@@ -261,8 +262,8 @@ pub fn def_eq_trusted_structural_test() {
   let proc = fake_digest(2)
   let n1 = term.Trusted(host, proc, term.Sort(0), term.Sort(0))
   let n2 = term.Trusted(host, proc, term.Sort(0), term.Sort(0))
-  kernel.def_eq(no_store(), n1, n2)
-  |> should.be_true
+  kernel.def_eq(no_store(), kernel.test_fuel, n1, n2)
+  |> should.equal(Ok(True))
 }
 
 pub fn def_eq_trusted_different_args_test() {
@@ -270,8 +271,8 @@ pub fn def_eq_trusted_different_args_test() {
   let proc = fake_digest(2)
   let n1 = term.Trusted(host, proc, term.Sort(0), term.Sort(0))
   let n2 = term.Trusted(host, proc, term.Sort(1), term.Sort(0))
-  kernel.def_eq(no_store(), n1, n2)
-  |> should.be_false
+  kernel.def_eq(no_store(), kernel.test_fuel, n1, n2)
+  |> should.equal(Ok(False))
 }
 
 // ── infer: conformance vectors ────────────────────────────────────────────────
@@ -280,31 +281,31 @@ pub fn infer_poly_id_test() {
   // Lam(Sort(0), Lam(Var(0), Var(0))) : Pi(Sort(0), Pi(Var(0), Var(1)))
   let id = term.Lam(term.Sort(0), term.Lam(term.Var(0), term.Var(0)))
   let expected = term.Pi(term.Sort(0), term.Pi(term.Var(0), term.Var(1)))
-  kernel.infer(no_store(), empty(), id)
+  kernel.infer(no_store(), kernel.test_fuel, empty(), id)
   |> should.equal(Ok(expected))
 }
 
 pub fn infer_poly_id_pi_type_test() {
   // Pi(Sort(0), Pi(Var(0), Var(1))) : Sort(1)
   let t = term.Pi(term.Sort(0), term.Pi(term.Var(0), term.Var(1)))
-  kernel.infer(no_store(), empty(), t)
+  kernel.infer(no_store(), kernel.test_fuel, empty(), t)
   |> should.equal(Ok(term.Sort(1)))
 }
 
 pub fn infer_sort_succ_test() {
-  kernel.infer(no_store(), empty(), term.Sort(7))
+  kernel.infer(no_store(), kernel.test_fuel, empty(), term.Sort(7))
   |> should.equal(Ok(term.Sort(8)))
 }
 
 pub fn infer_type_in_type_rejected_test() {
   // Sort(0) is not a Pi, so applying it to anything is NotAFunction
   let bad = term.App(term.Sort(0), term.Sort(0))
-  kernel.infer(no_store(), empty(), bad)
+  kernel.infer(no_store(), kernel.test_fuel, empty(), bad)
   |> should.equal(Error(kernel.NotAFunction(term.Sort(1))))
 }
 
 pub fn infer_unbound_var_rejected_test() {
-  kernel.infer(no_store(), empty(), term.Var(0))
+  kernel.infer(no_store(), kernel.test_fuel, empty(), term.Var(0))
   |> should.equal(Error(kernel.UnboundVar(0)))
 }
 
@@ -312,7 +313,7 @@ pub fn infer_eq_refl_shape_test() {
   // Refl(Sort(1), Sort(0)) : Eq(Sort(1), Sort(0), Sort(0))
   let t = term.Refl(term.Sort(1), term.Sort(0))
   let expected = term.Eq(term.Sort(1), term.Sort(0), term.Sort(0))
-  kernel.infer(no_store(), empty(), t)
+  kernel.infer(no_store(), kernel.test_fuel, empty(), t)
   |> should.equal(Ok(expected))
 }
 
@@ -320,7 +321,7 @@ pub fn infer_eq_refl_shape_test() {
 
 pub fn infer_sort_max_universe_overflow_test() {
   // Sort(max_universe) has no successor
-  kernel.infer(no_store(), empty(), term.Sort(4_294_967_295))
+  kernel.infer(no_store(), kernel.test_fuel, empty(), term.Sort(4_294_967_295))
   |> should.equal(Error(kernel.UniverseOverflow))
 }
 
@@ -328,14 +329,14 @@ pub fn infer_lam_wrong_arg_type_test() {
   // App(Lam(Sort(0), Var(0)), Sort(5)): Sort(5) has type Sort(6), domain is Sort(0)
   let f = term.Lam(term.Sort(0), term.Var(0))
   let bad = term.App(f, term.Sort(5))
-  kernel.infer(no_store(), empty(), bad)
+  kernel.infer(no_store(), kernel.test_fuel, empty(), bad)
   |> should.be_error
 }
 
 pub fn infer_var_in_context_test() {
   // Context [Sort(0)]: Var(0) has type Sort(0)
   let cx = push(empty(), term.Sort(0))
-  kernel.infer(no_store(), cx, term.Var(0))
+  kernel.infer(no_store(), kernel.test_fuel, cx, term.Var(0))
   |> should.equal(Ok(term.Sort(0)))
 }
 
@@ -344,7 +345,7 @@ pub fn infer_var_type_shifted_in_context_test() {
   // Var(1) = A, type = Sort(0).
   // Var(0) = a, type = shift(1, 0, Var(0)) = Var(1) = A.
   let cx = push(push(empty(), term.Sort(0)), term.Var(0))
-  kernel.infer(no_store(), cx, term.Var(0))
+  kernel.infer(no_store(), kernel.test_fuel, cx, term.Var(0))
   |> should.equal(Ok(term.Var(1)))
 }
 
@@ -353,7 +354,7 @@ pub fn infer_refl_in_context_test() {
   let cx = push(push(empty(), term.Sort(0)), term.Var(0))
   let refl = term.Refl(term.Var(1), term.Var(0))
   let expected = term.Eq(term.Var(1), term.Var(0), term.Var(0))
-  kernel.infer(no_store(), cx, refl)
+  kernel.infer(no_store(), kernel.test_fuel, cx, refl)
   |> should.equal(Ok(expected))
 }
 
@@ -361,13 +362,13 @@ pub fn infer_const_resolves_test() {
   let d = fake_digest(42)
   let id = term.Lam(term.Sort(0), term.Lam(term.Var(0), term.Var(0)))
   let store = make_store([#(d, id)])
-  kernel.infer(store, empty(), term.Const(d))
+  kernel.infer(store, kernel.test_fuel, empty(), term.Const(d))
   |> should.equal(Ok(term.Pi(term.Sort(0), term.Pi(term.Var(0), term.Var(1)))))
 }
 
 pub fn infer_const_unresolved_test() {
   let d = fake_digest(9)
-  kernel.infer(no_store(), empty(), term.Const(d))
+  kernel.infer(no_store(), kernel.test_fuel, empty(), term.Const(d))
   |> should.equal(Error(kernel.Unresolved(d)))
 }
 
@@ -375,7 +376,7 @@ pub fn infer_hole_well_formed_test() {
   // A hole whose goal type is well-formed infers to that goal type
   let goal = term.Pi(term.Sort(0), term.Sort(0))
   let h = term.Hole(7, goal)
-  kernel.infer(no_store(), empty(), h)
+  kernel.infer(no_store(), kernel.test_fuel, empty(), h)
   |> should.equal(Ok(goal))
 }
 
@@ -383,7 +384,7 @@ pub fn infer_hole_ill_formed_goal_rejected_test() {
   // A hole whose goal type is itself ill-typed is rejected
   let bad_goal = term.App(term.Sort(0), term.Sort(0))
   let h = term.Hole(0, bad_goal)
-  kernel.infer(no_store(), empty(), h)
+  kernel.infer(no_store(), kernel.test_fuel, empty(), h)
   |> should.be_error
 }
 
@@ -392,19 +393,19 @@ pub fn infer_hole_ill_formed_goal_rejected_test() {
 pub fn check_id_at_pi_type_test() {
   let id = term.Lam(term.Sort(0), term.Lam(term.Var(0), term.Var(0)))
   let id_ty = term.Pi(term.Sort(0), term.Pi(term.Var(0), term.Var(1)))
-  kernel.check(no_store(), empty(), id, id_ty)
+  kernel.check(no_store(), kernel.test_fuel, empty(), id, id_ty)
   |> should.equal(Ok(Nil))
 }
 
 pub fn check_type_in_type_rejected_test() {
   // Sort(0) : Sort(1), not Sort(0)
-  kernel.check(no_store(), empty(), term.Sort(0), term.Sort(0))
+  kernel.check(no_store(), kernel.test_fuel, empty(), term.Sort(0), term.Sort(0))
   |> should.be_error
 }
 
 pub fn check_mismatch_reports_types_test() {
   // infer Sort(0) = Sort(1); checking against Sort(99) should fail with Mismatch
-  kernel.check(no_store(), empty(), term.Sort(0), term.Sort(99))
+  kernel.check(no_store(), kernel.test_fuel, empty(), term.Sort(0), term.Sort(99))
   |> should.equal(
     Error(kernel.Mismatch(expected: term.Sort(99), actual: term.Sort(1))),
   )
@@ -419,7 +420,7 @@ pub fn check_up_to_beta_test() {
   let redex_dom = term.App(k, term.Sort(1))
   let goal = term.Pi(redex_dom, term.Sort(0))
   let id = term.Lam(term.Sort(0), term.Var(0))
-  kernel.check(no_store(), empty(), id, goal)
+  kernel.check(no_store(), kernel.test_fuel, empty(), id, goal)
   |> should.equal(Ok(Nil))
 }
 
@@ -434,7 +435,7 @@ pub fn trusted_checks_weakly_test() {
   let host = fake_pubkey(1)
   let cx = push(empty(), term.Sort(0))
   let node = term.Trusted(host, proc, term.Var(0), term.Var(0))
-  kernel.infer(store, cx, node)
+  kernel.infer(store, kernel.test_fuel, cx, node)
   |> should.equal(Ok(term.Var(0)))
 }
 
@@ -446,7 +447,7 @@ pub fn trusted_rejects_wrong_result_type_test() {
   let host = fake_pubkey(1)
   let cx = push(empty(), term.Sort(0))
   let node = term.Trusted(host, proc, term.Var(0), term.Sort(5))
-  kernel.infer(store, cx, node)
+  kernel.infer(store, kernel.test_fuel, cx, node)
   |> should.be_error
 }
 
@@ -457,7 +458,7 @@ pub fn trusted_rejects_wrong_argument_type_test() {
   let store = make_store([#(proc, proc_sig)])
   let host = fake_pubkey(1)
   let node = term.Trusted(host, proc, term.Sort(5), term.Sort(0))
-  kernel.infer(store, empty(), node)
+  kernel.infer(store, kernel.test_fuel, empty(), node)
   |> should.be_error
 }
 
@@ -465,7 +466,7 @@ pub fn trusted_rejects_unresolvable_proc_test() {
   let proc = fake_digest(203)
   let host = fake_pubkey(1)
   let node = term.Trusted(host, proc, term.Sort(0), term.Sort(0))
-  kernel.infer(no_store(), empty(), node)
+  kernel.infer(no_store(), kernel.test_fuel, empty(), node)
   |> should.equal(Error(kernel.Unresolved(proc)))
 }
 
@@ -473,16 +474,16 @@ pub fn trusted_normalize_inert_test() {
   let host = fake_pubkey(1)
   let proc = fake_digest(2)
   let node = term.Trusted(host, proc, term.Sort(0), term.Sort(0))
-  kernel.normalize(no_store(), node)
-  |> should.equal(node)
+  kernel.normalize(no_store(), kernel.test_fuel, node)
+  |> should.equal(Ok(node))
 }
 
 pub fn trusted_def_eq_structural_test() {
   let host = fake_pubkey(1)
   let proc = fake_digest(2)
   let node = term.Trusted(host, proc, term.Sort(0), term.Sort(0))
-  kernel.def_eq(no_store(), node, node)
-  |> should.be_true
+  kernel.def_eq(no_store(), kernel.test_fuel, node, node)
+  |> should.equal(Ok(True))
 }
 
 // ── differential: def_eq agrees with normalize-then-compare ───────────────────
@@ -510,10 +511,11 @@ pub fn def_eq_agrees_with_normalize_test() {
   let c = corpus()
   list.each(c, fn(a) {
     list.each(c, fn(b) {
-      let via_defeq = kernel.def_eq(s, a, b)
+      let via_defeq = kernel.def_eq(s, kernel.test_fuel, a, b)
       let via_norm =
-        kernel.normalize(s, a) == kernel.normalize(s, b)
-      via_defeq |> should.equal(via_norm)
+        kernel.normalize(s, kernel.test_fuel, a)
+        == kernel.normalize(s, kernel.test_fuel, b)
+      via_defeq |> should.equal(Ok(via_norm))
     })
   })
 }
@@ -523,8 +525,102 @@ pub fn def_eq_delta_agrees_with_normalize_test() {
   let store = make_store([#(d, term.Pi(term.Sort(0), term.Sort(0)))])
   let a = term.Const(d)
   let b = term.Pi(term.Sort(0), term.Sort(0))
-  kernel.def_eq(store, a, b)
-  |> should.be_true
-  kernel.normalize(store, a)
-  |> should.equal(kernel.normalize(store, b))
+  kernel.def_eq(store, kernel.test_fuel, a, b)
+  |> should.equal(Ok(True))
+  kernel.normalize(store, kernel.test_fuel, a)
+  |> should.equal(kernel.normalize(store, kernel.test_fuel, b))
+}
+
+// ── Fuel ──────────────────────────────────────────────────────────────────────
+
+// A rule set that never terminates: `loop x --> loop x`. Building this
+// requires an axiomatic constant (`loop`) and a single rewrite rule whose
+// lhs and rhs are the same shape, so matching always succeeds and always
+// produces another redex.
+fn nonterminating_env() {
+  let loop_digest = fake_digest(250)
+  let loop_ty = term.Pi(term.Sort(0), term.Sort(0))
+  let sigs = fn(d: digest.Digest) {
+    case d == loop_digest {
+      True -> Some(loop_ty)
+      False -> None
+    }
+  }
+  // lhs: PApp(PConst(loop), PVar(0))  --  matches `loop x`
+  // rhs: App(loop, Var(0))  i.e. `loop x` again -- self-referential
+  let rule =
+    rewrite.Rule(
+      lhs: rewrite.PApp(rewrite.PConst(loop_digest), rewrite.PVar(0)),
+      rhs: term.App(term.Const(loop_digest), term.Var(0)),
+      nvars: 1,
+    )
+  let rules = fn(d: digest.Digest) {
+    case d == loop_digest {
+      True -> [rule]
+      False -> []
+    }
+  }
+  #(
+    kernel.Env(defs: kernel.no_store(), sigs: sigs, rules: rules),
+    term.App(term.Const(loop_digest), term.Sort(0)),
+  )
+}
+
+pub fn fuel_exhausted_under_limited_fuel_test() {
+  // A genuinely non-terminating rule set fails closed with FuelExhausted
+  // under Limited(n) -- it does not hang the test suite.
+  let #(env, t) = nonterminating_env()
+  kernel.whnf(env, kernel.Limited(1000), t)
+  |> should.equal(Error(kernel.FuelExhausted))
+}
+
+// A rule set that DOES terminate, but only after `depth` rewrite-rule
+// firings: `peel(peel(...peel(base)...))` (n layers) with the single rule
+// `peel(x) --> x`. Each firing consumes one unit of Limited fuel, so this
+// lets a test dial in exactly how much fuel a full reduction needs.
+fn peeling_env(depth: Int) -> #(kernel.Env, term.Term) {
+  let peel_digest = fake_digest(251)
+  let peel_ty = term.Pi(term.Sort(0), term.Sort(0))
+  let sigs = fn(d: digest.Digest) {
+    case d == peel_digest {
+      True -> Some(peel_ty)
+      False -> None
+    }
+  }
+  let rule =
+    rewrite.Rule(
+      lhs: rewrite.PApp(rewrite.PConst(peel_digest), rewrite.PVar(0)),
+      rhs: term.Var(0),
+      nvars: 1,
+    )
+  let rules = fn(d: digest.Digest) {
+    case d == peel_digest {
+      True -> [rule]
+      False -> []
+    }
+  }
+  let env = kernel.Env(defs: kernel.no_store(), sigs: sigs, rules: rules)
+  #(env, peel_n(peel_digest, term.Sort(0), depth))
+}
+
+fn peel_n(peel_digest: digest.Digest, base: term.Term, n: Int) -> term.Term {
+  case n <= 0 {
+    True -> base
+    False -> term.App(term.Const(peel_digest), peel_n(peel_digest, base, n - 1))
+  }
+}
+
+pub fn unlimited_is_a_distinct_code_path_test() {
+  // Unlimited is not "Limited with a large constant": it is a genuinely
+  // different code path with no counter at all. The same 50-layer,
+  // legitimately-terminating reduction that exhausts a too-small
+  // Limited(10) budget completes cleanly under Unlimited -- if Unlimited
+  // were secretly Limited(some large N), it could only avoid
+  // FuelExhausted by coincidence of N being big enough, whereas a rule set
+  // with no counter at all is unaffected by depth entirely.
+  let #(env, deep) = peeling_env(50)
+  kernel.whnf(env, kernel.Limited(10), deep)
+  |> should.equal(Error(kernel.FuelExhausted))
+  kernel.whnf(env, kernel.Unlimited, deep)
+  |> should.equal(Ok(term.Sort(0)))
 }

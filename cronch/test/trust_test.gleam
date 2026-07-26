@@ -1,6 +1,8 @@
 import cronch/digest
 import cronch/hash
+import cronch/kernel
 import cronch/pubkey
+import cronch/rewrite
 import cronch/term
 import cronch/trust
 import gleam/bit_array
@@ -59,7 +61,7 @@ pub fn own_trusted_node_test() {
   let proc = fake_proc(0x02)
   let t = term.Trusted(host, proc, term.Sort(0), term.Sort(0))
   trust.trust_set(no_store(), t)
-  |> should.equal([#(host, proc)])
+  |> should.equal([trust.HostTrust(host, proc)])
 }
 
 pub fn two_distinct_hosts_test() {
@@ -74,8 +76,8 @@ pub fn two_distinct_hosts_test() {
     )
   let set = trust.trust_set(no_store(), t)
   set |> list.length |> should.equal(2)
-  set |> list.contains(#(h1, p1)) |> should.be_true
-  set |> list.contains(#(h2, p2)) |> should.be_true
+  set |> list.contains(trust.HostTrust(h1, p1)) |> should.be_true
+  set |> list.contains(trust.HostTrust(h2, p2)) |> should.be_true
 }
 
 pub fn duplicate_trusted_nodes_deduplicated_test() {
@@ -85,7 +87,7 @@ pub fn duplicate_trusted_nodes_deduplicated_test() {
   let node = term.Trusted(host, proc, term.Sort(0), term.Sort(0))
   let t = term.App(node, node)
   trust.trust_set(no_store(), t)
-  |> should.equal([#(host, proc)])
+  |> should.equal([trust.HostTrust(host, proc)])
 }
 
 // ── trust_set: transitive through Const ──────────────────────────────────────
@@ -101,7 +103,7 @@ pub fn transitive_through_const_test() {
   // X = Lam(Sort(0), Const(y_addr))
   let x = term.Lam(term.Sort(0), term.Const(y_addr))
   trust.trust_set(store, x)
-  |> should.equal([#(host, proc)])
+  |> should.equal([trust.HostTrust(host, proc)])
 }
 
 pub fn const_not_in_store_adds_nothing_test() {
@@ -133,8 +135,8 @@ pub fn proc_reference_followed_test() {
   let set = trust.trust_set(store, root)
 
   set |> list.length |> should.equal(2)
-  set |> list.contains(#(outer_host, proc_addr)) |> should.be_true
-  set |> list.contains(#(inner_host, inner_proc)) |> should.be_true
+  set |> list.contains(trust.HostTrust(outer_host, proc_addr)) |> should.be_true
+  set |> list.contains(trust.HostTrust(inner_host, inner_proc)) |> should.be_true
 }
 
 pub fn cycle_guard_no_infinite_loop_test() {
@@ -150,7 +152,7 @@ pub fn cycle_guard_no_infinite_loop_test() {
   // App(Const(y_addr), Const(y_addr)) -- visits y twice but adds pair once
   let t = term.App(term.Const(y_addr), term.Const(y_addr))
   trust.trust_set(store, t)
-  |> should.equal([#(host, proc)])
+  |> should.equal([trust.HostTrust(host, proc)])
 }
 
 // ── trust_set: sorted order ───────────────────────────────────────────────────
@@ -169,7 +171,7 @@ pub fn trust_set_is_sorted_test() {
       term.Trusted(h1, p1, term.Sort(0), term.Sort(0)),
     )
   let set = trust.trust_set(no_store(), t)
-  set |> should.equal([#(h1, p1), #(h3, p4)])
+  set |> should.equal([trust.HostTrust(h1, p1), trust.HostTrust(h3, p4)])
 }
 
 // ── policy ────────────────────────────────────────────────────────────────────
@@ -177,7 +179,7 @@ pub fn trust_set_is_sorted_test() {
 pub fn empty_policy_denies_host_test() {
   let host = fake_host(0x01)
   let proc = fake_proc(0x02)
-  let set = [#(host, proc)]
+  let set = [trust.HostTrust(host, proc)]
   trust.is_authorized(set, trust.empty_policy())
   |> should.be_false
 }
@@ -190,7 +192,7 @@ pub fn empty_policy_admits_empty_trust_set_test() {
 pub fn policy_with_host_admits_it_test() {
   let host = fake_host(0x01)
   let proc = fake_proc(0x02)
-  let set = [#(host, proc)]
+  let set = [trust.HostTrust(host, proc)]
   let policy = trust.policy_with_hosts([host])
   trust.is_authorized(set, policy)
   |> should.be_true
@@ -201,13 +203,13 @@ pub fn policy_missing_one_host_denies_test() {
   let p1 = fake_proc(0x02)
   let h2 = fake_host(0x03)
   let p2 = fake_proc(0x04)
-  let set = [#(h1, p1), #(h2, p2)]
+  let set = [trust.HostTrust(h1, p1), trust.HostTrust(h2, p2)]
   // Policy only admits h1; h2 is not covered.
   let policy = trust.policy_with_hosts([h1])
   trust.is_authorized(set, policy)
   |> should.be_false
   trust.unauthorized(set, policy)
-  |> should.equal([#(h2, p2)])
+  |> should.equal([trust.HostTrust(h2, p2)])
 }
 
 pub fn policy_covering_all_hosts_authorizes_test() {
@@ -215,7 +217,7 @@ pub fn policy_covering_all_hosts_authorizes_test() {
   let p1 = fake_proc(0x02)
   let h2 = fake_host(0x03)
   let p2 = fake_proc(0x04)
-  let set = [#(h1, p1), #(h2, p2)]
+  let set = [trust.HostTrust(h1, p1), trust.HostTrust(h2, p2)]
   let policy = trust.policy_with_hosts([h1, h2])
   trust.is_authorized(set, policy)
   |> should.be_true
@@ -246,7 +248,7 @@ pub fn policy_admits_listed_host_test() {
   let proc_sig = term.Pi(term.Sort(1), term.Sort(5))
   let proc = hash.hash(digest.Blake3, proc_sig)
   let host = fake_host(0x01)
-  let set = [#(host, proc)]
+  let set = [trust.HostTrust(host, proc)]
   let policy = trust.policy_with_hosts([host])
   trust.is_authorized(set, policy)
   |> should.be_true
@@ -347,6 +349,174 @@ pub fn verify_host_result_bad_signature_test() {
       host: host, proc: proc, args: args, result: result, signature: bad_sig,
     )
   trust.verify_host_result(r) |> should.be_false
+}
+
+// ── policy: mixed host and rule-set trust dependencies ─────────────────────────
+
+pub fn policy_treats_host_and_rule_set_dependencies_independently_test() {
+  // A trust set with one HostTrust and one RuleSetTrust entry: a policy
+  // authorizing only the host still denies the rule set, and vice versa --
+  // unauthorized/is_authorized must not special-case which kind of
+  // dependency is missing.
+  let host = fake_host(0x01)
+  let proc = fake_proc(0x02)
+  let author = fake_host(0x03)
+  let rule_hash = fake_proc(0x04)
+  let set = [trust.HostTrust(host, proc), trust.RuleSetTrust(author, rule_hash)]
+
+  trust.is_authorized(set, trust.policy_with_hosts([host])) |> should.be_false
+  trust.unauthorized(set, trust.policy_with_hosts([host]))
+  |> should.equal([trust.RuleSetTrust(author, rule_hash)])
+
+  trust.is_authorized(set, trust.policy_with_rule_sets([#(author, rule_hash)]))
+  |> should.be_false
+  trust.unauthorized(set, trust.policy_with_rule_sets([#(author, rule_hash)]))
+  |> should.equal([trust.HostTrust(host, proc)])
+
+  trust.is_authorized(
+    set,
+    trust.policy_with([host], [#(author, rule_hash)]),
+  )
+  |> should.be_true
+}
+
+pub fn policy_rule_set_authorization_is_pinned_to_exact_hash_test() {
+  // Authorizing (author, hash1) does not authorize (author, hash2) -- an
+  // author is not a blanket grant over every rule set they might sign.
+  let author = fake_host(0x05)
+  let hash1 = fake_proc(0x06)
+  let hash2 = fake_proc(0x07)
+  let set = [trust.RuleSetTrust(author, hash1)]
+  trust.is_authorized(set, trust.policy_with_rule_sets([#(author, hash2)]))
+  |> should.be_false
+  trust.is_authorized(set, trust.policy_with_rule_sets([#(author, hash1)]))
+  |> should.be_true
+}
+
+// ── trust_set_with_rules ────────────────────────────────────────────────────────
+
+// A minimal env: one axiomatic constant `f` with a single rewrite rule
+// `f x --> x`, so `f (Sort 0)` normalizes to `Sort 0` only by invoking the
+// rule set.
+fn strip_env() -> #(kernel.Env, digest.Digest) {
+  let f_digest = fake_proc(0x10)
+  let sigs = fn(d: digest.Digest) {
+    case d == f_digest {
+      True -> Some(term.Pi(term.Sort(0), term.Sort(0)))
+      False -> None
+    }
+  }
+  let rule =
+    rewrite.Rule(
+      lhs: rewrite.PApp(rewrite.PConst(f_digest), rewrite.PVar(0)),
+      rhs: term.Var(0),
+      nvars: 1,
+    )
+  let rules = fn(d: digest.Digest) {
+    case d == f_digest {
+      True -> [rule]
+      False -> []
+    }
+  }
+  #(kernel.Env(defs: kernel.no_store(), sigs: sigs, rules: rules), f_digest)
+}
+
+pub fn trust_set_with_rules_reports_the_rule_set_used_test() {
+  let #(env, f_digest) = strip_env()
+  let author = fake_host(0x11)
+  let rule_set_hash = fake_proc(0x12)
+  let tag = kernel.RuleUse(author: author, rule_set: rule_set_hash)
+  let prov = fn(d: digest.Digest) {
+    case d == f_digest {
+      True -> [#(tag, rewrite.Rule(
+        lhs: rewrite.PApp(rewrite.PConst(f_digest), rewrite.PVar(0)),
+        rhs: term.Var(0),
+        nvars: 1,
+      ))]
+      False -> []
+    }
+  }
+  let artifact = term.App(term.Const(f_digest), term.Sort(0))
+
+  let assert Ok(set) =
+    trust.trust_set_with_rules(env, kernel.test_fuel, prov, artifact)
+  set |> should.equal([trust.RuleSetTrust(author, rule_set_hash)])
+
+  trust.is_authorized(set, trust.empty_policy()) |> should.be_false
+  trust.is_authorized(
+    set,
+    trust.policy_with_rule_sets([#(author, rule_set_hash)]),
+  )
+  |> should.be_true
+}
+
+pub fn trust_set_with_rules_is_empty_when_no_rule_fires_test() {
+  // A term that never invokes the axiomatic constant at all has no
+  // rule-set trust dependency, even though the Env carries rules.
+  let #(env, _f_digest) = strip_env()
+  let prov = fn(_: digest.Digest) { [] }
+  let artifact = term.Sort(0)
+  trust.trust_set_with_rules(env, kernel.test_fuel, prov, artifact)
+  |> should.equal(Ok([]))
+}
+
+pub fn trust_set_with_rules_includes_host_dependencies_too_test() {
+  // trust_set_with_rules must not drop the ordinary Trusted/Const walk --
+  // it is additive on top of it.
+  let #(env, _f_digest) = strip_env()
+  let host = fake_host(0x13)
+  let proc = fake_proc(0x14)
+  let prov = fn(_: digest.Digest) { [] }
+  let artifact = term.Trusted(host, proc, term.Sort(0), term.Sort(0))
+  trust.trust_set_with_rules(env, kernel.test_fuel, prov, artifact)
+  |> should.equal(Ok([trust.HostTrust(host, proc)]))
+}
+
+// ── rule-set signature verification ───────────────────────────────────────────
+
+pub fn verify_rule_set_signature_valid_test() {
+  let #(pub_bytes, priv_bytes) = ffi_generate_ed25519()
+  let author = pubkey.PublicKey(pubkey.Ed25519, pub_bytes)
+  let rule_set_hash = fake_proc(0x20)
+  let msg = trust.rule_set_message(rule_set_hash)
+  let sig = ffi_sign_ed25519(msg, priv_bytes)
+  trust.verify_rule_set_signature(trust.RuleSetSignature(
+    author: author,
+    hash: rule_set_hash,
+    signature: sig,
+  ))
+  |> should.be_true
+}
+
+pub fn verify_rule_set_signature_tampered_hash_test() {
+  let #(pub_bytes, priv_bytes) = ffi_generate_ed25519()
+  let author = pubkey.PublicKey(pubkey.Ed25519, pub_bytes)
+  let rule_set_hash = fake_proc(0x21)
+  let msg = trust.rule_set_message(rule_set_hash)
+  let sig = ffi_sign_ed25519(msg, priv_bytes)
+  // Tamper: claim the signature covers a different rule set's hash.
+  let other_hash = fake_proc(0x22)
+  trust.verify_rule_set_signature(trust.RuleSetSignature(
+    author: author,
+    hash: other_hash,
+    signature: sig,
+  ))
+  |> should.be_false
+}
+
+pub fn verify_rule_set_signature_wrong_key_test() {
+  let #(_pub_bytes, priv_bytes) = ffi_generate_ed25519()
+  let #(wrong_pub, _) = ffi_generate_ed25519()
+  let wrong_author = pubkey.PublicKey(pubkey.Ed25519, wrong_pub)
+  let rule_set_hash = fake_proc(0x23)
+  let msg = trust.rule_set_message(rule_set_hash)
+  let sig = ffi_sign_ed25519(msg, priv_bytes)
+  trust.verify_rule_set_signature(trust.RuleSetSignature(
+    author: wrong_author,
+    hash: rule_set_hash,
+    signature: sig,
+  ))
+  |> should.be_false
 }
 
 // ── FFI: Ed25519 sign/keygen (via cronch_crypto) ──────────────────────────────

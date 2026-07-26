@@ -28,9 +28,11 @@
 
 import cronch/digest.{type Digest}
 import cronch/pubkey.{type PublicKey}
+import cronch/rewrite.{type Pattern, type Rule}
 import cronch/term.{type Term}
 import gleam/bytes_tree.{type BytesTree}
 import gleam/int
+import gleam/list
 import gleam/result
 
 /// Reasons a byte string can fail to decode. Non-canonical input is always
@@ -50,6 +52,8 @@ pub type DecodeError {
   VarintOverflow
   /// A complete term decoded but bytes remained after it.
   TrailingBytes
+  /// Leading tag byte of a Pattern is not in 0x00–0x04.
+  UnknownPatternTag(Int)
 }
 
 // ── Encoding ──────────────────────────────────────────────────────────────────
@@ -145,6 +149,70 @@ fn encode_varint(n: Int) -> BytesTree {
       |> bytes_tree.append_tree(encode_varint(rest))
     }
   }
+}
+
+// ── Encoding: Pattern, Rule, rule sets ─────────────────────────────────────────
+//
+// Additive only: this does not touch the Term/Digest/HostResult wire format
+// above. A rule set (List(Rule)) is content-addressed the same way every
+// other object in this codebase is -- hash.gleam's hash_rule_set feeds this
+// encoding through digest.hash_bytes, exactly as hash.hash does for Term.
+
+fn encode_pattern_tree(p: Pattern) -> BytesTree {
+  case p {
+    rewrite.PVar(k) ->
+      bytes_tree.from_bit_array(<<0x00>>)
+      |> bytes_tree.append_tree(encode_varint(k))
+
+    rewrite.PSort(u) ->
+      bytes_tree.from_bit_array(<<0x01>>)
+      |> bytes_tree.append_tree(encode_varint(u))
+
+    rewrite.PConst(d) ->
+      bytes_tree.from_bit_array(<<0x02>>)
+      |> bytes_tree.append_tree(encode_digest(d))
+
+    rewrite.PApp(f, a) ->
+      bytes_tree.from_bit_array(<<0x03>>)
+      |> bytes_tree.append_tree(encode_pattern_tree(f))
+      |> bytes_tree.append_tree(encode_pattern_tree(a))
+
+    rewrite.PRefl(ty, val) ->
+      bytes_tree.from_bit_array(<<0x04>>)
+      |> bytes_tree.append_tree(encode_pattern_tree(ty))
+      |> bytes_tree.append_tree(encode_pattern_tree(val))
+  }
+}
+
+/// Canonical serialization of a Pattern. Total and deterministic, same
+/// tag-then-fields discipline as `encode`.
+pub fn encode_pattern(p: Pattern) -> BitArray {
+  bytes_tree.to_bit_array(encode_pattern_tree(p))
+}
+
+/// Canonical serialization of a Rule: lhs pattern | rhs term | varint nvars.
+pub fn encode_rule(r: Rule) -> BitArray {
+  bytes_tree.to_bit_array(encode_rule_tree(r))
+}
+
+fn encode_rule_tree(r: Rule) -> BytesTree {
+  encode_pattern_tree(r.lhs)
+  |> bytes_tree.append_tree(encode_tree(r.rhs))
+  |> bytes_tree.append_tree(encode_varint(r.nvars))
+}
+
+/// Canonical serialization of a rule set: varint count | rule*count, in
+/// list order. Order is part of the content address -- two rule sets with
+/// the same rules in a different order are, deliberately, different objects
+/// (whnf tries rules in order, so order is observable behavior).
+pub fn encode_rule_set(rules: List(Rule)) -> BitArray {
+  let tree =
+    bytes_tree.from_bit_array(<<>>)
+    |> bytes_tree.append_tree(encode_varint(list.length(rules)))
+  list.fold(rules, tree, fn(acc, r) {
+    bytes_tree.append_tree(acc, encode_rule_tree(r))
+  })
+  |> bytes_tree.to_bit_array
 }
 
 // ── Decoding ──────────────────────────────────────────────────────────────────
@@ -298,5 +366,98 @@ fn decode_varint_loop(
       }
     }
     _ -> Error(Truncated)
+  }
+}
+
+// ── Decoding: Pattern, Rule, rule sets ─────────────────────────────────────────
+
+/// Decode canonical bytes into a Pattern. Rejects non-canonical encodings
+/// and trailing bytes, same discipline as `decode`.
+pub fn decode_pattern(bytes: BitArray) -> Result(Pattern, DecodeError) {
+  case decode_pattern_term(bytes) {
+    Ok(#(p, <<>>)) -> Ok(p)
+    Ok(#(_, _)) -> Error(TrailingBytes)
+    Error(e) -> Error(e)
+  }
+}
+
+fn decode_pattern_term(
+  data: BitArray,
+) -> Result(#(Pattern, BitArray), DecodeError) {
+  case data {
+    <<>> -> Error(Truncated)
+    <<tag, rest:bits>> -> decode_pattern_by_tag(tag, rest)
+    _ -> Error(Truncated)
+  }
+}
+
+fn decode_pattern_by_tag(
+  tag: Int,
+  rest: BitArray,
+) -> Result(#(Pattern, BitArray), DecodeError) {
+  case tag {
+    0x00 -> {
+      use #(k, r) <- result.try(decode_varint(rest))
+      Ok(#(rewrite.PVar(k), r))
+    }
+    0x01 -> {
+      use #(u, r) <- result.try(decode_varint(rest))
+      Ok(#(rewrite.PSort(u), r))
+    }
+    0x02 -> {
+      use #(d, r) <- result.try(decode_digest(rest))
+      Ok(#(rewrite.PConst(d), r))
+    }
+    0x03 -> {
+      use #(f, r2) <- result.try(decode_pattern_term(rest))
+      use #(a, r3) <- result.try(decode_pattern_term(r2))
+      Ok(#(rewrite.PApp(f, a), r3))
+    }
+    0x04 -> {
+      use #(ty, r2) <- result.try(decode_pattern_term(rest))
+      use #(val, r3) <- result.try(decode_pattern_term(r2))
+      Ok(#(rewrite.PRefl(ty, val), r3))
+    }
+    other -> Error(UnknownPatternTag(other))
+  }
+}
+
+/// Decode canonical bytes into a Rule.
+pub fn decode_rule(bytes: BitArray) -> Result(Rule, DecodeError) {
+  case decode_rule_term(bytes) {
+    Ok(#(r, <<>>)) -> Ok(r)
+    Ok(#(_, _)) -> Error(TrailingBytes)
+    Error(e) -> Error(e)
+  }
+}
+
+fn decode_rule_term(data: BitArray) -> Result(#(Rule, BitArray), DecodeError) {
+  use #(lhs, r1) <- result.try(decode_pattern_term(data))
+  use #(rhs, r2) <- result.try(decode_term(r1))
+  use #(nvars, r3) <- result.try(decode_varint(r2))
+  Ok(#(rewrite.Rule(lhs: lhs, rhs: rhs, nvars: nvars), r3))
+}
+
+/// Decode canonical bytes into a rule set (a list of Rules, in order).
+pub fn decode_rule_set(bytes: BitArray) -> Result(List(Rule), DecodeError) {
+  use #(count, r1) <- result.try(decode_varint(bytes))
+  use #(rules, r2) <- result.try(decode_rule_list(r1, count, []))
+  case r2 {
+    <<>> -> Ok(rules)
+    _ -> Error(TrailingBytes)
+  }
+}
+
+fn decode_rule_list(
+  data: BitArray,
+  remaining: Int,
+  acc: List(Rule),
+) -> Result(#(List(Rule), BitArray), DecodeError) {
+  case remaining <= 0 {
+    True -> Ok(#(list.reverse(acc), data))
+    False -> {
+      use #(r, rest) <- result.try(decode_rule_term(data))
+      decode_rule_list(rest, remaining - 1, [r, ..acc])
+    }
   }
 }

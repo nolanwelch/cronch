@@ -166,20 +166,24 @@ pub fn main() -> Nil {
 
   // ── 4. Kernel ──────────────────────────────────────────────────────────────
   let store = no_store()
+  let env = kernel.env_from_store(store)
+  let fuel = kernel.test_fuel
   let cx = kernel.empty()
 
   section("kernel")
   bench("kernel.whnf/beta_redex", 200_000, fn() {
-    kernel.whnf(store, beta_redex)
+    kernel.whnf(env, fuel, beta_redex)
   })
-  bench("kernel.whnf/id_lam", 200_000, fn() { kernel.whnf(store, id_lam) })
+  bench("kernel.whnf/id_lam", 200_000, fn() { kernel.whnf(env, fuel, id_lam) })
   bench("kernel.def_eq/id_lam=id_lam", 200_000, fn() {
-    kernel.def_eq(store, id_lam, id_lam)
+    kernel.def_eq(env, fuel, id_lam, id_lam)
   })
-  bench("kernel.infer/sort0", 200_000, fn() { kernel.infer(store, cx, sort0) })
-  bench("kernel.infer/id_lam", 100_000, fn() { kernel.infer(store, cx, id_lam) })
+  bench("kernel.infer/sort0", 200_000, fn() { kernel.infer(env, fuel, cx, sort0) })
+  bench("kernel.infer/id_lam", 100_000, fn() {
+    kernel.infer(env, fuel, cx, id_lam)
+  })
   bench("kernel.check/id_lam:id_type", 100_000, fn() {
-    kernel.check(store, cx, id_lam, id_type)
+    kernel.check(env, fuel, cx, id_lam, id_type)
   })
 
   // ── 5. Syntax ──────────────────────────────────────────────────────────────
@@ -205,10 +209,10 @@ pub fn main() -> Nil {
   // ── 6. Oracle ──────────────────────────────────────────────────────────────
   section("oracle")
   bench("oracle.solve/refl_eq", 100_000, fn() {
-    oracle.solve(store, oracle.refl_oracle(), eq_goal)
+    oracle.solve(store, oracle.refl_oracle(), fuel, eq_goal)
   })
   bench("oracle.solve/stuck_sort0", 100_000, fn() {
-    oracle.solve(store, oracle.refl_oracle(), sort0)
+    oracle.solve(store, oracle.refl_oracle(), fuel, sort0)
   })
 
   io.println("")

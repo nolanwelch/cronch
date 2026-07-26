@@ -27,7 +27,7 @@ fn make_store(entries: List(#(digest.Digest, term.Term))) -> oracle.Store {
 pub fn refl_oracle_closes_closed_eq_goal_test() {
   // Eq(Sort(1), Sort(0), Sort(0)) is closed by Refl(Sort(1), Sort(0))
   let problem = term.Eq(term.Sort(1), term.Sort(0), term.Sort(0))
-  let out = oracle.solve(no_store(), oracle.refl_oracle(), problem)
+  let out = oracle.solve(no_store(), oracle.refl_oracle(), kernel.test_fuel, problem)
   oracle.is_closed(out) |> should.be_true
   out.artifact |> should.equal(term.Refl(term.Sort(1), term.Sort(0)))
   out.stuck |> should.equal([])
@@ -41,7 +41,7 @@ pub fn refl_oracle_closes_eq_under_binders_test() {
       term.Sort(0),
       term.Lam(term.Var(0), term.Hole(0, term.Eq(term.Var(1), term.Var(0), term.Var(0)))),
     )
-  let out = oracle.solve_state(no_store(), oracle.refl_oracle(), start)
+  let out = oracle.solve_state(no_store(), oracle.refl_oracle(), kernel.test_fuel, start)
   oracle.is_closed(out) |> should.be_true
   let expected =
     term.Lam(
@@ -101,12 +101,12 @@ pub fn library_oracle_wrong_store_fails_closed_test() {
   let lib = oracle.library_oracle([#(goal2, proof2)])
 
   let grown = make_store([#(addr1, obj1)])
-  let r = oracle.solve(grown, lib, goal2)
+  let r = oracle.solve(grown, lib, kernel.test_fuel, goal2)
   oracle.is_closed(r) |> should.be_true
   r.artifact |> should.equal(proof2)
 
   // With empty store: Const(addr1) is unresolvable, hole stays stuck.
-  let r2 = oracle.solve(no_store(), lib, goal2)
+  let r2 = oracle.solve(no_store(), lib, kernel.test_fuel, goal2)
   oracle.is_closed(r2) |> should.be_false
 }
 
@@ -142,13 +142,13 @@ pub fn solve_wraps_in_single_hole_test() {
   // solve(problem) = solve_state(Hole(0, problem))
   // If the oracle closes it, artifact has no holes.
   let problem = term.Eq(term.Sort(1), term.Sort(0), term.Sort(0))
-  let out = oracle.solve(no_store(), oracle.refl_oracle(), problem)
+  let out = oracle.solve(no_store(), oracle.refl_oracle(), kernel.test_fuel, problem)
   oracle.is_closed(out) |> should.be_true
 }
 
 pub fn unsolvable_goal_stuck_not_corrupted_test() {
   // The refl oracle cannot inhabit Sort(0); the hole stays open.
-  let out = oracle.solve(no_store(), oracle.refl_oracle(), term.Sort(0))
+  let out = oracle.solve(no_store(), oracle.refl_oracle(), kernel.test_fuel, term.Sort(0))
   oracle.is_closed(out) |> should.be_false
   out.stuck |> list.length |> should.equal(1)
   out.stuck
@@ -160,7 +160,7 @@ pub fn bad_proposal_never_corrupts_state_test() {
   // A library oracle with a wrong candidate (Sort(5) for a goal of Sort(0)).
   // The kernel rejects it; the hole stays stuck.
   let lib = oracle.library_oracle([#(term.Sort(0), term.Sort(5))])
-  let out = oracle.solve(no_store(), lib, term.Sort(0))
+  let out = oracle.solve(no_store(), lib, kernel.test_fuel, term.Sort(0))
   oracle.is_closed(out) |> should.be_false
   out.stuck |> list.length |> should.equal(1)
 }
@@ -170,7 +170,7 @@ pub fn multiple_holes_filled_in_order_test() {
   // refl_oracle closes each in pre-order.
   let eq_goal = term.Eq(term.Sort(1), term.Sort(0), term.Sort(0))
   let start = term.App(term.Hole(0, eq_goal), term.Hole(1, eq_goal))
-  let out = oracle.solve_state(no_store(), oracle.refl_oracle(), start)
+  let out = oracle.solve_state(no_store(), oracle.refl_oracle(), kernel.test_fuel, start)
   oracle.is_closed(out) |> should.be_true
   let refl = term.Refl(term.Sort(1), term.Sort(0))
   out.artifact |> should.equal(term.App(refl, refl))

@@ -105,20 +105,32 @@ pub fn verifying_store(inner: Store) -> Store {
 
 /// Drive a problem (a goal type) to completion: start from a single open hole
 /// at the problem type and fill until no progress.
-pub fn solve(store: Store, oracle: Oracle, problem: Term) -> Outcome {
-  solve_state(store, oracle, term.Hole(0, problem))
+///
+/// `fuel` is threaded straight to every kernel re-check (see kernel.gleam's
+/// Fuel doc comment) -- the oracle is untrusted and every proposal it makes
+/// is re-verified by the kernel, so a fuel budget for that verification must
+/// be visible at this call site too, not hidden behind a default.
+pub fn solve(store: Store, oracle: Oracle, fuel: kernel.Fuel, problem: Term) -> Outcome {
+  solve_state(store, oracle, fuel, term.Hole(0, problem))
 }
 
 /// Drive an arbitrary starting term (which may already have binders and holes).
 /// The store is always wrapped with verifying_store before the kernel sees it.
-pub fn solve_state(store: Store, oracle: Oracle, start: Term) -> Outcome {
+pub fn solve_state(
+  store: Store,
+  oracle: Oracle,
+  fuel: kernel.Fuel,
+  start: Term,
+) -> Outcome {
   let store = verifying_store(store)
-  loop(store, oracle, start, [])
+  let env = kernel.env_from_store(store)
+  loop(env, oracle, fuel, start, [])
 }
 
 fn loop(
-  store: Store,
+  env: kernel.Env,
   oracle: Oracle,
+  fuel: kernel.Fuel,
   state: Term,
   stuck: List(Int),
 ) -> Outcome {
@@ -126,11 +138,11 @@ fn loop(
     None -> Outcome(artifact: state, stuck: collect_stuck(state, stuck))
     Some(goal) ->
       case oracle(goal) {
-        None -> loop(store, oracle, state, [goal.id, ..stuck])
+        None -> loop(env, oracle, fuel, state, [goal.id, ..stuck])
         Some(p) ->
-          case kernel.check(store, goal.cx, p.term, goal.target) {
-            Ok(_) -> loop(store, oracle, fill(state, goal.id, p.term), stuck)
-            Error(_) -> loop(store, oracle, state, [goal.id, ..stuck])
+          case kernel.check(env, fuel, goal.cx, p.term, goal.target) {
+            Ok(_) -> loop(env, oracle, fuel, fill(state, goal.id, p.term), stuck)
+            Error(_) -> loop(env, oracle, fuel, state, [goal.id, ..stuck])
           }
       }
   }

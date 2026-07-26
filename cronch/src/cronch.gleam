@@ -86,13 +86,22 @@ pub fn main() -> Nil {
 }
 
 fn run_checks(m: elab.ElabModule) -> Nil {
+  let env = kernel.env_from_store(m.store)
   let results =
     list.map(m.entries, fn(entry) {
       case entry.kind {
         elab.HoleKind ->
           #(entry.name, Skipped)
         _ ->
-          case kernel.check(m.store, kernel.empty(), entry.term, entry.declared_ty) {
+          case
+            kernel.check(
+              env,
+              kernel.test_fuel,
+              kernel.empty(),
+              entry.term,
+              entry.declared_ty,
+            )
+          {
             Ok(_) -> #(entry.name, Proved)
             Error(_) -> #(entry.name, Failed)
           }
