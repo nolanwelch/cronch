@@ -28,12 +28,11 @@ pub fn hash_rule_set(algo: HashAlgorithm, rules: List(Rule)) -> Digest {
 
 /// Self-describing string address for an already-computed digest.
 pub fn address_of(d: Digest) -> String {
-  case d {
-    Digest(algo, bytes) ->
-      digest.algorithm_name(algo)
-      <> ":"
-      <> { bytes |> bit_array.base16_encode |> string.lowercase }
-  }
+  let Digest(algo, bytes) = d
+
+  digest.algorithm_name(algo)
+  <> ":"
+  <> { bytes |> bit_array.base16_encode |> string.lowercase }
 }
 
 /// Compute and format the address of a term.
