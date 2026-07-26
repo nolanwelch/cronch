@@ -17,7 +17,7 @@
 ///   Refl(A, a)        tag 0x06 | term A | term a
 ///   Const(d)          tag 0x07 | digest d
 ///   Hole(id, A)       tag 0x08 | varint id | term A
-///   Trusted(…)        tag 0x09 | pubkey host | digest proc | term args | term result_ty
+///   Trusted(...)      tag 0x09 | pubkey host | digest proc | term args | term result_ty
 ///
 /// digest  = algo_tag(1) | bytes(digest_size(algo))
 /// pubkey  = scheme_tag(1) | bytes(key_size(scheme))
@@ -25,7 +25,6 @@
 ///
 /// Any other leading byte is a decode error. Trailing bytes after one complete
 /// term are a decode error.
-
 import cronch/digest.{type Digest}
 import cronch/pubkey.{type PublicKey}
 import cronch/rewrite.{type Pattern, type Rule}
@@ -118,23 +117,19 @@ fn encode_tree(t: Term) -> BytesTree {
 }
 
 fn encode_digest(d: Digest) -> BytesTree {
-  case d {
-    digest.Digest(algo, bytes) -> {
-      let tag = digest.algorithm_tag(algo)
-      bytes_tree.from_bit_array(<<tag>>)
-      |> bytes_tree.append(bytes)
-    }
-  }
+  let digest.Digest(algo, bytes) = d
+  let tag = digest.algorithm_tag(algo)
+
+  bytes_tree.from_bit_array(<<tag>>)
+  |> bytes_tree.append(bytes)
 }
 
 fn encode_pubkey(k: PublicKey) -> BytesTree {
-  case k {
-    pubkey.PublicKey(scheme, bytes) -> {
-      let tag = pubkey.scheme_tag(scheme)
-      bytes_tree.from_bit_array(<<tag>>)
-      |> bytes_tree.append(bytes)
-    }
-  }
+  let pubkey.PublicKey(scheme, bytes) = k
+  let tag = pubkey.scheme_tag(scheme)
+
+  bytes_tree.from_bit_array(<<tag>>)
+  |> bytes_tree.append(bytes)
 }
 
 // Canonical LEB128 varint encoder. u32 range, little-endian base-128.
@@ -312,7 +307,9 @@ fn decode_digest(data: BitArray) -> Result(#(Digest, BitArray), DecodeError) {
   }
 }
 
-fn decode_pubkey(data: BitArray) -> Result(#(PublicKey, BitArray), DecodeError) {
+fn decode_pubkey(
+  data: BitArray,
+) -> Result(#(PublicKey, BitArray), DecodeError) {
   case data {
     <<scheme_tag, rest:bits>> ->
       case pubkey.decode_scheme_tag(scheme_tag) {
