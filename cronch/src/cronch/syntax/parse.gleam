@@ -3,7 +3,6 @@
 /// The surface AST keeps human names; elaboration converts to de Bruijn `Term`s.
 /// Addresses are written as `algo_name_64hex` (a single word token); this keeps
 /// the colon token unambiguous for type annotations.
-
 import cronch/digest
 import cronch/pubkey
 import cronch/syntax/lex.{type Tok}
@@ -82,7 +81,10 @@ fn expect(toks: List(Tok), want: Tok) -> Result(List(Tok), ParseError) {
     [t, ..rest] if t == want -> Ok(rest)
     other ->
       Error(ParseError(
-        "expected " <> tok_to_string(want) <> ", found " <> first_tok_string(other),
+        "expected "
+        <> tok_to_string(want)
+        <> ", found "
+        <> first_tok_string(other),
       ))
   }
 }
@@ -90,7 +92,8 @@ fn expect(toks: List(Tok), want: Tok) -> Result(List(Tok), ParseError) {
 fn expect_word(toks: List(Tok)) -> Result(#(String, List(Tok)), ParseError) {
   case toks {
     [lex.Word(w), ..rest] -> Ok(#(w, rest))
-    other -> Error(ParseError("expected a word, found " <> first_tok_string(other)))
+    other ->
+      Error(ParseError("expected a word, found " <> first_tok_string(other)))
   }
 }
 
@@ -128,8 +131,7 @@ fn parse_digest_word(w: String) -> Result(digest.Digest, ParseError) {
           digest.algorithm_name(a) == algo_name
         })
       {
-        Error(_) ->
-          Error(ParseError("unknown hash algorithm: " <> algo_name))
+        Error(_) -> Error(ParseError("unknown hash algorithm: " <> algo_name))
         Ok(algo) ->
           case bit_array.base16_decode(string.uppercase(hex)) {
             Ok(bytes) -> Ok(digest.Digest(algo, bytes))
@@ -151,8 +153,7 @@ fn parse_pubkey_word(w: String) -> Result(pubkey.PublicKey, ParseError) {
           pubkey.scheme_name(s) == scheme_name
         })
       {
-        Error(_) ->
-          Error(ParseError("unknown key scheme: " <> scheme_name))
+        Error(_) -> Error(ParseError("unknown key scheme: " <> scheme_name))
         Ok(scheme) ->
           case bit_array.base16_decode(string.uppercase(hex)) {
             Ok(bytes) -> Ok(pubkey.PublicKey(scheme, bytes))
@@ -208,9 +209,7 @@ fn parse_hole_spec(
         Error(_) ->
           case is_keyword(w) {
             True ->
-              Error(ParseError(
-                "expected hole id or name, found keyword: " <> w,
-              ))
+              Error(ParseError("expected hole id or name, found keyword: " <> w))
             False -> Ok(#(HoleName(w), rest))
           }
       }
@@ -231,9 +230,7 @@ fn parse_proc_ref(
         False ->
           case is_keyword(w) {
             True ->
-              Error(ParseError(
-                "expected proc reference, found keyword: " <> w,
-              ))
+              Error(ParseError("expected proc reference, found keyword: " <> w))
             False -> Ok(#(ProcName(w), rest))
           }
       }
@@ -331,15 +328,11 @@ fn parse_app_loop(f: Expr, toks: List(Tok)) -> PR(Expr) {
 
 fn starts_atom(toks: List(Tok)) -> Bool {
   case toks {
-    [lex.LParen, ..] -> True
-    [lex.Word("Type"), ..] -> True
-    [lex.Word("var"), ..] -> True
-    [lex.Word("ref"), ..] -> True
-    [lex.Word(w), ..] ->
-      case is_keyword(w) {
-        True -> False
-        False -> True
-      }
+    [lex.LParen, ..]
+    | [lex.Word("Type"), ..]
+    | [lex.Word("var"), ..]
+    | [lex.Word("ref"), ..] -> True
+    [lex.Word(w), ..] -> !is_keyword(w)
     _ -> False
   }
 }
@@ -368,9 +361,7 @@ fn parse_atom(toks: List(Tok)) -> PR(Expr) {
     [lex.Word(w), ..rest] ->
       case is_keyword(w) {
         True ->
-          Error(ParseError(
-            "unexpected keyword `" <> w <> "` in atom position",
-          ))
+          Error(ParseError("unexpected keyword `" <> w <> "` in atom position"))
         False -> Ok(#(EName(w), rest))
       }
     other ->
@@ -429,9 +420,7 @@ fn parse_module_loop(
 pub fn parse_expr(src: String) -> Result(Expr, ParseError) {
   case lex.lex(src) {
     Error(e) ->
-      Error(ParseError(
-        "lex error at " <> int_to_string(e.pos) <> ": " <> e.msg,
-      ))
+      Error(ParseError("lex error at " <> int_to_string(e.pos) <> ": " <> e.msg))
     Ok(toks) ->
       case parse_term(toks) {
         Error(e) -> Error(e)
@@ -448,9 +437,7 @@ pub fn parse_expr(src: String) -> Result(Expr, ParseError) {
 pub fn parse_module(src: String) -> Result(List(Item), ParseError) {
   case lex.lex(src) {
     Error(e) ->
-      Error(ParseError(
-        "lex error at " <> int_to_string(e.pos) <> ": " <> e.msg,
-      ))
+      Error(ParseError("lex error at " <> int_to_string(e.pos) <> ": " <> e.msg))
     Ok(toks) -> parse_module_loop(toks, [])
   }
 }
