@@ -9,8 +9,8 @@ import gleeunit/should
 
 fn fake_digest(b: Int) -> digest.Digest {
   let bytes = <<
-    b, b, b, b, b, b, b, b, b, b, b, b, b, b, b, b,
-    b, b, b, b, b, b, b, b, b, b, b, b, b, b, b, b,
+    b, b, b, b, b, b, b, b, b, b, b, b, b, b, b, b, b, b, b, b, b, b, b, b, b, b,
+    b, b, b, b, b, b,
   >>
   digest.Digest(digest.Blake3, bytes)
 }
@@ -47,17 +47,19 @@ pub fn match_const_mismatch_test() {
 
 pub fn match_app_binds_argument_test() {
   let d = fake_digest(1)
-  let pat = rewrite.PApp(rewrite.PConst(d), rewrite.PVar(0))
+  let pattern = rewrite.PApp(rewrite.PConst(d), rewrite.PVar(0))
   let t = term.App(term.Const(d), term.Sort(2))
-  rewrite.match_pattern(pat, t, dict.new())
+  rewrite.match_pattern(pattern, t, dict.new())
   |> should.equal(Some(dict.from_list([#(0, term.Sort(2))])))
 }
 
 pub fn match_refl_binds_both_fields_test() {
-  let pat = rewrite.PRefl(rewrite.PVar(0), rewrite.PVar(1))
+  let pattern = rewrite.PRefl(rewrite.PVar(0), rewrite.PVar(1))
   let t = term.Refl(term.Sort(0), term.Sort(1))
-  rewrite.match_pattern(pat, t, dict.new())
-  |> should.equal(Some(dict.from_list([#(0, term.Sort(0)), #(1, term.Sort(1))])))
+  rewrite.match_pattern(pattern, t, dict.new())
+  |> should.equal(
+    Some(dict.from_list([#(0, term.Sort(0)), #(1, term.Sort(1))])),
+  )
 }
 
 // ── a matching rule fires; a non-matching rule doesn't ────────────────────────

@@ -3,15 +3,14 @@
 ///
 /// Enforces the grammar wall: a `trusted` form is an error in proof position.
 /// Proof position: `define` bodies. Runtime position: `runtime` bodies.
-
 import cronch/digest
 import cronch/hash
-import cronch/term
 import cronch/syntax/parse.{
-  type Expr, type HoleSpec, type Item, type ProcRef,
-  Define, EApp, EArrow, EConst, EEq, EHole, ELam, EName, EPi, ERefl, ESort,
-  ETrusted, EVarIx, HoleItem, HoleName, HoleNum, ProcDigest, ProcName,
+  type Expr, type HoleSpec, type Item, type ProcRef, Define, EApp, EArrow,
+  EConst, EEq, EHole, ELam, EName, EPi, ERefl, ESort, ETrusted, EVarIx, HoleItem,
+  HoleName, HoleNumber, ProcDigest, ProcName,
 }
+import cronch/term
 import gleam/dict
 import gleam/list
 import gleam/option.{type Option, None, Some}
@@ -44,29 +43,29 @@ pub fn empty_hole_alloc() -> HoleAlloc {
   HoleAlloc(next: 0, named: dict.new())
 }
 
-fn alloc_id(alloc: HoleAlloc, spec: HoleSpec) -> #(Int, HoleAlloc) {
+fn allocate_id(hole_alloc: HoleAlloc, spec: HoleSpec) -> #(Int, HoleAlloc) {
   case spec {
-    HoleNum(n) -> #(n, alloc)
+    HoleNumber(n) -> #(n, hole_alloc)
     HoleName(s) ->
-      case dict.get(alloc.named, s) {
-        Ok(id) -> #(id, alloc)
+      case dict.get(hole_alloc.named, s) {
+        Ok(id) -> #(id, hole_alloc)
         Error(_) -> {
           // Named holes get ids from a high base to avoid collisions with
           // typical small explicit ids.
-          let id = 1_000_000 + alloc.next
-          let alloc =
+          let id = 1_000_000 + hole_alloc.next
+          let hole_alloc =
             HoleAlloc(
-              next: alloc.next + 1,
-              named: dict.insert(alloc.named, s, id),
+              next: hole_alloc.next + 1,
+              named: dict.insert(hole_alloc.named, s, id),
             )
-          #(id, alloc)
+          #(id, hole_alloc)
         }
       }
   }
 }
 
 /// Top-level name -> content address map.
-pub type Env =
+pub type Environment =
   dict.Dict(String, digest.Digest)
 
 /// Resolved module store: content address -> term.
@@ -86,7 +85,7 @@ pub type ElabEntry {
     name: String,
     kind: EntryKind,
     position: Position,
-    declared_ty: term.Term,
+    declared_typ: term.Term,
     term: term.Term,
     address: digest.Digest,
   )
@@ -94,7 +93,7 @@ pub type ElabEntry {
 
 /// A fully elaborated module.
 pub type ElabModule {
-  ElabModule(store: Store, env: Env, entries: List(ElabEntry))
+  ElabModule(store: Store, environment: Environment, entries: List(ElabEntry))
 }
 
 // ── Elaboration ───────────────────────────────────────────────────────────────
@@ -104,8 +103,8 @@ pub type ElabModule {
 pub fn elaborate_expr(
   e: Expr,
   scope: List(String),
-  env: Env,
-  pos: Position,
+  environment: Environment,
+  position: Position,
   holes: HoleAlloc,
 ) -> Result(#(term.Term, HoleAlloc), ElabError) {
   case e {
@@ -113,7 +112,7 @@ pub fn elaborate_expr(
       case find_var(scope, s, 0) {
         Some(idx) -> Ok(#(term.Var(idx), holes))
         None ->
-          case dict.get(env, s) {
+          case dict.get(environment, s) {
             Ok(d) -> Ok(#(term.Const(d), holes))
             Error(_) -> Error(UnboundName(s))
           }
@@ -126,65 +125,151 @@ pub fn elaborate_expr(
     EConst(d) -> Ok(#(term.Const(d), holes))
 
     EArrow(a, b) -> {
-      use #(da, holes) <- eresult(elaborate_expr(a, scope, env, pos, holes))
-      use #(db, holes) <- eresult(
-        elaborate_expr(b, ["_", ..scope], env, pos, holes),
-      )
+      use #(da, holes) <- try_elab(elaborate_expr(
+        a,
+        scope,
+        environment,
+        position,
+        holes,
+      ))
+      use #(db, holes) <- try_elab(elaborate_expr(
+        b,
+        ["_", ..scope],
+        environment,
+        position,
+        holes,
+      ))
       Ok(#(term.Pi(da, db), holes))
     }
 
     EPi(name, a, b) -> {
-      use #(da, holes) <- eresult(elaborate_expr(a, scope, env, pos, holes))
-      use #(db, holes) <- eresult(
-        elaborate_expr(b, [name, ..scope], env, pos, holes),
-      )
+      use #(da, holes) <- try_elab(elaborate_expr(
+        a,
+        scope,
+        environment,
+        position,
+        holes,
+      ))
+      use #(db, holes) <- try_elab(elaborate_expr(
+        b,
+        [name, ..scope],
+        environment,
+        position,
+        holes,
+      ))
       Ok(#(term.Pi(da, db), holes))
     }
 
     ELam(name, a, b) -> {
-      use #(da, holes) <- eresult(elaborate_expr(a, scope, env, pos, holes))
-      use #(db, holes) <- eresult(
-        elaborate_expr(b, [name, ..scope], env, pos, holes),
-      )
+      use #(da, holes) <- try_elab(elaborate_expr(
+        a,
+        scope,
+        environment,
+        position,
+        holes,
+      ))
+      use #(db, holes) <- try_elab(elaborate_expr(
+        b,
+        [name, ..scope],
+        environment,
+        position,
+        holes,
+      ))
       Ok(#(term.Lam(da, db), holes))
     }
 
     EApp(f, a) -> {
-      use #(df, holes) <- eresult(elaborate_expr(f, scope, env, pos, holes))
-      use #(da, holes) <- eresult(elaborate_expr(a, scope, env, pos, holes))
+      use #(df, holes) <- try_elab(elaborate_expr(
+        f,
+        scope,
+        environment,
+        position,
+        holes,
+      ))
+      use #(da, holes) <- try_elab(elaborate_expr(
+        a,
+        scope,
+        environment,
+        position,
+        holes,
+      ))
       Ok(#(term.App(df, da), holes))
     }
 
-    EEq(ty, a, b) -> {
-      use #(dt, holes) <- eresult(elaborate_expr(ty, scope, env, pos, holes))
-      use #(da, holes) <- eresult(elaborate_expr(a, scope, env, pos, holes))
-      use #(db, holes) <- eresult(elaborate_expr(b, scope, env, pos, holes))
+    EEq(typ, a, b) -> {
+      use #(dt, holes) <- try_elab(elaborate_expr(
+        typ,
+        scope,
+        environment,
+        position,
+        holes,
+      ))
+      use #(da, holes) <- try_elab(elaborate_expr(
+        a,
+        scope,
+        environment,
+        position,
+        holes,
+      ))
+      use #(db, holes) <- try_elab(elaborate_expr(
+        b,
+        scope,
+        environment,
+        position,
+        holes,
+      ))
       Ok(#(term.Eq(dt, da, db), holes))
     }
 
-    ERefl(ty, a) -> {
-      use #(dt, holes) <- eresult(elaborate_expr(ty, scope, env, pos, holes))
-      use #(da, holes) <- eresult(elaborate_expr(a, scope, env, pos, holes))
+    ERefl(typ, a) -> {
+      use #(dt, holes) <- try_elab(elaborate_expr(
+        typ,
+        scope,
+        environment,
+        position,
+        holes,
+      ))
+      use #(da, holes) <- try_elab(elaborate_expr(
+        a,
+        scope,
+        environment,
+        position,
+        holes,
+      ))
       Ok(#(term.Refl(dt, da), holes))
     }
 
     EHole(spec, goal) -> {
-      let #(id, holes) = alloc_id(holes, spec)
-      use #(dg, holes) <- eresult(elaborate_expr(goal, scope, env, pos, holes))
+      let #(id, holes) = allocate_id(holes, spec)
+      use #(dg, holes) <- try_elab(elaborate_expr(
+        goal,
+        scope,
+        environment,
+        position,
+        holes,
+      ))
       Ok(#(term.Hole(id, dg), holes))
     }
 
     ETrusted(host, proc_ref, args_expr, rty_expr) -> {
-      case pos {
+      case position {
         Proof -> Error(TrustedInProofPosition)
         Runtime -> {
-          use proc_digest <- eresult(resolve_proc(proc_ref, env))
-          use #(da, holes) <- eresult(
-            elaborate_expr(args_expr, scope, env, pos, holes),
-          )
-          use #(dr, holes) <- eresult(
-            elaborate_expr(rty_expr, scope, env, pos, holes),
-          )
+          use proc_digest <- try_elab(resolve_proc(proc_ref, environment))
+          use #(da, holes) <- try_elab(elaborate_expr(
+            args_expr,
+            scope,
+            environment,
+            position,
+            holes,
+          ))
+          use #(dr, holes) <- try_elab(elaborate_expr(
+            rty_expr,
+            scope,
+            environment,
+            position,
+            holes,
+          ))
           Ok(#(term.Trusted(host, proc_digest, da, dr), holes))
         }
       }
@@ -194,21 +279,24 @@ pub fn elaborate_expr(
 
 fn resolve_proc(
   proc_ref: ProcRef,
-  env: Env,
+  environment: Environment,
 ) -> Result(digest.Digest, ElabError) {
   case proc_ref {
     ProcDigest(d) -> Ok(d)
     ProcName(n) ->
-      case dict.get(env, n) {
+      case dict.get(environment, n) {
         Ok(d) -> Ok(d)
         Error(_) -> Error(UnboundProc(n))
       }
   }
 }
 
-/// Elaborate a closed expression (empty scope, empty env) at the given position.
-pub fn elaborate_closed(e: Expr, pos: Position) -> Result(term.Term, ElabError) {
-  case elaborate_expr(e, [], dict.new(), pos, empty_hole_alloc()) {
+/// Elaborate a closed expression (empty scope, empty environment) at the given position.
+pub fn elaborate_closed(
+  e: Expr,
+  position: Position,
+) -> Result(term.Term, ElabError) {
+  case elaborate_expr(e, [], dict.new(), position, empty_hole_alloc()) {
     Ok(#(t, _)) -> Ok(t)
     Error(err) -> Error(err)
   }
@@ -224,7 +312,7 @@ pub fn elaborate_module(items: List(Item)) -> Result(ElabModule, ElabError) {
 fn do_elab_module(
   items: List(Item),
   store_dict: dict.Dict(digest.Digest, term.Term),
-  env: Env,
+  environment: Environment,
   entries: List(ElabEntry),
   holes: HoleAlloc,
 ) -> Result(ElabModule, ElabError) {
@@ -233,37 +321,73 @@ fn do_elab_module(
       let store = fn(d: digest.Digest) {
         dict.get(store_dict, d) |> option_of_result
       }
-      Ok(ElabModule(store: store, env: env, entries: list.reverse(entries)))
+      Ok(ElabModule(
+        store: store,
+        environment: environment,
+        entries: list.reverse(entries),
+      ))
     }
 
-    [Define(name, ty, body), ..rest] ->
-      elab_def(name, ty, body, Proof, DefineKind, rest, store_dict, env, entries, holes)
+    [Define(name, typ, body), ..rest] ->
+      elab_def(
+        name,
+        typ,
+        body,
+        Proof,
+        DefineKind,
+        rest,
+        store_dict,
+        environment,
+        entries,
+        holes,
+      )
 
-    [parse.Runtime(name, ty, body), ..rest] ->
-      elab_def(name, ty, body, Runtime, RuntimeKind, rest, store_dict, env, entries, holes)
+    [parse.Runtime(name, typ, body), ..rest] ->
+      elab_def(
+        name,
+        typ,
+        body,
+        Runtime,
+        RuntimeKind,
+        rest,
+        store_dict,
+        environment,
+        entries,
+        holes,
+      )
 
-    [HoleItem(name, ty), ..rest] -> {
-      case dict.has_key(env, name) {
+    [HoleItem(name, typ), ..rest] -> {
+      case dict.has_key(environment, name) {
         True -> Error(DuplicateName(name))
         False -> {
-          use #(declared_ty, holes) <- eresult(
-            elaborate_expr(ty, [], env, Proof, holes),
-          )
-          let #(id, holes) = alloc_id(holes, HoleName(name))
-          let t = term.Hole(id, declared_ty)
-          let addr = hash.hash(digest.Blake3, t)
-          let store_dict = dict.insert(store_dict, addr, t)
-          let env = dict.insert(env, name, addr)
+          use #(declared_typ, holes) <- try_elab(elaborate_expr(
+            typ,
+            [],
+            environment,
+            Proof,
+            holes,
+          ))
+          let #(id, holes) = allocate_id(holes, HoleName(name))
+          let t = term.Hole(id, declared_typ)
+          let address = hash.hash(digest.Blake3, t)
+          let store_dict = dict.insert(store_dict, address, t)
+          let environment = dict.insert(environment, name, address)
           let entry =
             ElabEntry(
               name: name,
               kind: HoleKind,
               position: Proof,
-              declared_ty: declared_ty,
+              declared_typ: declared_typ,
               term: t,
-              address: addr,
+              address: address,
             )
-          do_elab_module(rest, store_dict, env, [entry, ..entries], holes)
+          do_elab_module(
+            rest,
+            store_dict,
+            environment,
+            [entry, ..entries],
+            holes,
+          )
         }
       }
     }
@@ -272,36 +396,46 @@ fn do_elab_module(
 
 fn elab_def(
   name: String,
-  ty: Expr,
+  typ: Expr,
   body: Expr,
-  pos: Position,
+  position: Position,
   kind: EntryKind,
   rest: List(Item),
   store_dict: dict.Dict(digest.Digest, term.Term),
-  env: Env,
+  environment: Environment,
   entries: List(ElabEntry),
   holes: HoleAlloc,
 ) -> Result(ElabModule, ElabError) {
-  case dict.has_key(env, name) {
+  case dict.has_key(environment, name) {
     True -> Error(DuplicateName(name))
     False -> {
-      use #(declared_ty, holes) <- eresult(
-        elaborate_expr(ty, [], env, pos, holes),
-      )
-      use #(t, holes) <- eresult(elaborate_expr(body, [], env, pos, holes))
-      let addr = hash.hash(digest.Blake3, t)
-      let store_dict = dict.insert(store_dict, addr, t)
-      let env = dict.insert(env, name, addr)
+      use #(declared_typ, holes) <- try_elab(elaborate_expr(
+        typ,
+        [],
+        environment,
+        position,
+        holes,
+      ))
+      use #(t, holes) <- try_elab(elaborate_expr(
+        body,
+        [],
+        environment,
+        position,
+        holes,
+      ))
+      let address = hash.hash(digest.Blake3, t)
+      let store_dict = dict.insert(store_dict, address, t)
+      let environment = dict.insert(environment, name, address)
       let entry =
         ElabEntry(
           name: name,
           kind: kind,
-          position: pos,
-          declared_ty: declared_ty,
+          position: position,
+          declared_typ: declared_typ,
           term: t,
-          address: addr,
+          address: address,
         )
-      do_elab_module(rest, store_dict, env, [entry, ..entries], holes)
+      do_elab_module(rest, store_dict, environment, [entry, ..entries], holes)
     }
   }
 }
@@ -316,7 +450,7 @@ fn find_var(scope: List(String), name: String, idx: Int) -> Option(Int) {
   }
 }
 
-fn eresult(
+fn try_elab(
   r: Result(a, ElabError),
   f: fn(a) -> Result(b, ElabError),
 ) -> Result(b, ElabError) {

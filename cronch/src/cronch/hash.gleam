@@ -15,29 +15,29 @@ import gleam/bit_array
 import gleam/string
 
 /// Hash a term's canonical bytes with the given algorithm.
-pub fn hash(algo: HashAlgorithm, t: Term) -> Digest {
-  digest.hash_bytes(algo, serialize.encode(t))
+pub fn hash(algorithm: HashAlgorithm, t: Term) -> Digest {
+  digest.hash_bytes(algorithm, serialize.encode(t))
 }
 
 /// Hash a rule set's canonical bytes with the given algorithm. A rule set
 /// is content-addressed the same way a term is -- see
 /// serialize.encode_rule_set for the wire format.
-pub fn hash_rule_set(algo: HashAlgorithm, rules: List(Rule)) -> Digest {
-  digest.hash_bytes(algo, serialize.encode_rule_set(rules))
+pub fn hash_rule_set(algorithm: HashAlgorithm, rules: List(Rule)) -> Digest {
+  digest.hash_bytes(algorithm, serialize.encode_rule_set(rules))
 }
 
 /// Self-describing string address for an already-computed digest.
 pub fn address_of(d: Digest) -> String {
-  let Digest(algo, bytes) = d
+  let Digest(algorithm, bytes) = d
 
-  digest.algorithm_name(algo)
+  digest.algorithm_name(algorithm)
   <> ":"
   <> { bytes |> bit_array.base16_encode |> string.lowercase }
 }
 
 /// Compute and format the address of a term.
-pub fn address(algo: HashAlgorithm, t: Term) -> String {
-  address_of(hash(algo, t))
+pub fn address(algorithm: HashAlgorithm, t: Term) -> String {
+  address_of(hash(algorithm, t))
 }
 
 /// Parse an `"<algorithm>:<lowerhex-digest>"` address string into a Digest.
@@ -49,12 +49,12 @@ pub fn parse_address(s: String) -> Result(Digest, Nil) {
 
 fn try_algorithms(
   s: String,
-  algos: List(HashAlgorithm),
+  algorithms: List(HashAlgorithm),
 ) -> Result(Digest, Nil) {
   // Split once on ":" to separate the algorithm name from the hex digest.
   // A valid address has exactly one colon, so any other split result is rejected.
   case string.split(s, on: ":") {
-    [name, hex] -> match_algorithm(name, hex, algos)
+    [name, hex] -> match_algorithm(name, hex, algorithms)
     _ -> Error(Nil)
   }
 }
@@ -62,19 +62,19 @@ fn try_algorithms(
 fn match_algorithm(
   name: String,
   hex: String,
-  algos: List(HashAlgorithm),
+  algorithms: List(HashAlgorithm),
 ) -> Result(Digest, Nil) {
-  case algos {
+  case algorithms {
     [] -> Error(Nil)
-    [algo, ..rest] ->
+    [algorithm, ..rest] ->
       case
-        digest.algorithm_name(algo) == name
-        && string.length(hex) == digest.digest_size(algo) * 2
+        digest.algorithm_name(algorithm) == name
+        && string.length(hex) == digest.digest_size(algorithm) * 2
       {
         False -> match_algorithm(name, hex, rest)
         True ->
           case hex |> string.uppercase |> bit_array.base16_decode {
-            Ok(bytes) -> Ok(Digest(algo, bytes))
+            Ok(bytes) -> Ok(Digest(algorithm, bytes))
             Error(_) -> Error(Nil)
           }
       }

@@ -5,7 +5,6 @@
 /// is Pi.  Equality is the built-in Eq.
 ///
 /// Pipeline: source text -> parse -> elaborate -> kernel check.
-
 import cronch/kernel
 import cronch/syntax/elab
 import cronch/syntax/parse
@@ -86,20 +85,19 @@ pub fn main() -> Nil {
 }
 
 fn run_checks(m: elab.ElabModule) -> Nil {
-  let env = kernel.env_from_store(m.store)
+  let environment = kernel.environment_from_store(m.store)
   let results =
     list.map(m.entries, fn(entry) {
       case entry.kind {
-        elab.HoleKind ->
-          #(entry.name, Skipped)
+        elab.HoleKind -> #(entry.name, Skipped)
         _ ->
           case
             kernel.check(
-              env,
+              environment,
               kernel.test_fuel,
               kernel.empty(),
               entry.term,
-              entry.declared_ty,
+              entry.declared_typ,
             )
           {
             Ok(_) -> #(entry.name, Proved)
@@ -118,12 +116,12 @@ fn run_checks(m: elab.ElabModule) -> Nil {
   let total = list.length(results)
   io.println(string.repeat("-", 50))
   io.println(
-    int_str(proved)
+    int_to_string(proved)
     <> "/"
-    <> int_str(total - holes)
+    <> int_to_string(total - holes)
     <> " proofs verified"
     <> case holes > 0 {
-      True -> ", " <> int_str(holes) <> " open hole(s)"
+      True -> ", " <> int_to_string(holes) <> " open hole(s)"
       False -> ""
     },
   )
@@ -152,21 +150,21 @@ fn describe_elab_error(e: elab.ElabError) -> String {
   }
 }
 
-fn int_str(n: Int) -> String {
+fn int_to_string(n: Int) -> String {
   case n {
     0 -> "0"
-    _ -> do_int_str(n, "")
+    _ -> do_int_to_string(n, "")
   }
 }
 
-fn do_int_str(n: Int, acc: String) -> String {
+fn do_int_to_string(n: Int, acc: String) -> String {
   case n {
     0 -> acc
-    _ -> do_int_str(n / 10, digit_char(n % 10) <> acc)
+    _ -> do_int_to_string(n / 10, int_digit(n % 10) <> acc)
   }
 }
 
-fn digit_char(d: Int) -> String {
+fn int_digit(d: Int) -> String {
   case d {
     0 -> "0"
     1 -> "1"
@@ -180,4 +178,3 @@ fn digit_char(d: Int) -> String {
     _ -> "9"
   }
 }
-

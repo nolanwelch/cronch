@@ -7,7 +7,6 @@
 /// Variables free at the print point are printed as `var {index}`.
 /// Pi is always printed in the dependent `fun (x : A) -> B` form.
 /// Content addresses are printed as `algo_name_64hex`.
-
 import cronch/digest
 import cronch/pubkey
 import cronch/term
@@ -30,43 +29,43 @@ const atom_prec = 3
 
 /// Print a core term as round-trippable surface syntax.
 pub fn print_term(t: term.Term) -> String {
-  let #(s, _) = pp(t, 0)
+  let #(s, _) = print_at(t, 0)
   s
 }
 
 /// Print `t` at binder `depth`, parenthesizing if its precedence is below `min`.
 fn at_least(t: term.Term, depth: Int, min: Int) -> String {
-  let #(s, p) = pp(t, depth)
+  let #(s, p) = print_at(t, depth)
   case p < min {
     True -> "(" <> s <> ")"
     False -> s
   }
 }
 
-fn pp(t: term.Term, depth: Int) -> #(String, Int) {
+fn print_at(t: term.Term, depth: Int) -> #(String, Int) {
   case t {
     term.Var(k) ->
       case k < depth {
-        True -> #("x" <> int_str(depth - 1 - k), atom_prec)
-        False -> #("var " <> int_str(k), atom_prec)
+        True -> #("x" <> int_to_string(depth - 1 - k), atom_prec)
+        False -> #("var " <> int_to_string(k), atom_prec)
       }
 
-    term.Sort(u) -> #("Type " <> int_str(u), atom_prec)
+    term.Sort(u) -> #("Type " <> int_to_string(u), atom_prec)
 
     term.Const(d) -> #("ref " <> digest_str(d), atom_prec)
 
     term.Pi(a, b) -> {
-      let name = "x" <> int_str(depth)
-      let dom = at_least(a, depth, term_prec)
+      let name = "x" <> int_to_string(depth)
+      let domain = at_least(a, depth, term_prec)
       let body = at_least(b, depth + 1, term_prec)
-      #("fun (" <> name <> " : " <> dom <> ") -> " <> body, term_prec)
+      #("fun (" <> name <> " : " <> domain <> ") -> " <> body, term_prec)
     }
 
     term.Lam(a, b) -> {
-      let name = "x" <> int_str(depth)
-      let dom = at_least(a, depth, term_prec)
+      let name = "x" <> int_to_string(depth)
+      let domain = at_least(a, depth, term_prec)
       let body = at_least(b, depth + 1, term_prec)
-      #("lam (" <> name <> " : " <> dom <> ") => " <> body, term_prec)
+      #("lam (" <> name <> " : " <> domain <> ") => " <> body, term_prec)
     }
 
     term.App(f, a) -> {
@@ -75,22 +74,22 @@ fn pp(t: term.Term, depth: Int) -> #(String, Int) {
       #(func <> " " <> arg, app_prec)
     }
 
-    term.Eq(ty, a, b) -> {
-      let ty_s = at_least(ty, depth, atom_prec)
+    term.Eq(typ, a, b) -> {
+      let typ_s = at_least(typ, depth, atom_prec)
       let a_s = at_least(a, depth, atom_prec)
       let b_s = at_least(b, depth, atom_prec)
-      #("Eq " <> ty_s <> " " <> a_s <> " " <> b_s, eqapp_prec)
+      #("Eq " <> typ_s <> " " <> a_s <> " " <> b_s, eqapp_prec)
     }
 
-    term.Refl(ty, a) -> {
-      let ty_s = at_least(ty, depth, atom_prec)
+    term.Refl(typ, a) -> {
+      let typ_s = at_least(typ, depth, atom_prec)
       let a_s = at_least(a, depth, atom_prec)
-      #("refl " <> ty_s <> " " <> a_s, eqapp_prec)
+      #("refl " <> typ_s <> " " <> a_s, eqapp_prec)
     }
 
     term.Hole(id, goal) -> {
       let goal_s = at_least(goal, depth, term_prec)
-      #("hole " <> int_str(id) <> " : " <> goal_s, term_prec)
+      #("hole " <> int_to_string(id) <> " : " <> goal_s, term_prec)
     }
 
     term.Trusted(host, proc, args, rty) -> {
@@ -107,34 +106,34 @@ fn pp(t: term.Term, depth: Int) -> #(String, Int) {
 }
 
 fn digest_str(d: digest.Digest) -> String {
-  let digest.Digest(algo, bytes) = d
-  digest.algorithm_name(algo)
+  let digest.Digest(algorithm, bytes) = d
+  digest.algorithm_name(algorithm)
   <> "_"
   <> { bytes |> bit_array.base16_encode |> string.lowercase }
 }
 
-fn pubkey_str(pk: pubkey.PublicKey) -> String {
-  let pubkey.PublicKey(scheme, bytes) = pk
+fn pubkey_str(public_key: pubkey.PublicKey) -> String {
+  let pubkey.PublicKey(scheme, bytes) = public_key
   pubkey.scheme_name(scheme)
   <> "_"
   <> { bytes |> bit_array.base16_encode |> string.lowercase }
 }
 
-fn int_str(n: Int) -> String {
+fn int_to_string(n: Int) -> String {
   case n {
     0 -> "0"
-    _ -> do_int_str(n, "")
+    _ -> do_int_to_string(n, "")
   }
 }
 
-fn do_int_str(n: Int, acc: String) -> String {
+fn do_int_to_string(n: Int, acc: String) -> String {
   case n {
     0 -> acc
-    _ -> do_int_str(n / 10, digit_char(n % 10) <> acc)
+    _ -> do_int_to_string(n / 10, int_digit(n % 10) <> acc)
   }
 }
 
-fn digit_char(d: Int) -> String {
+fn int_digit(d: Int) -> String {
   case d {
     0 -> "0"
     1 -> "1"

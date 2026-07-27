@@ -10,11 +10,11 @@ import gleeunit/should
 // ── helpers ───────────────────────────────────────────────────────────────────
 
 fn no_store() {
-  kernel.env_from_store(kernel.no_store())
+  kernel.environment_from_store(kernel.no_store())
 }
 
 fn make_store(entries: List(#(digest.Digest, term.Term))) {
-  kernel.env_from_store(fn(d: digest.Digest) {
+  kernel.environment_from_store(fn(d: digest.Digest) {
     case list.find(entries, fn(e) { e.0 == d }) {
       Ok(#(_, t)) -> Some(t)
       Error(_) -> None
@@ -24,16 +24,16 @@ fn make_store(entries: List(#(digest.Digest, term.Term))) {
 
 fn fake_digest(b: Int) -> digest.Digest {
   let bytes = <<
-    b, b, b, b, b, b, b, b, b, b, b, b, b, b, b, b,
-    b, b, b, b, b, b, b, b, b, b, b, b, b, b, b, b,
+    b, b, b, b, b, b, b, b, b, b, b, b, b, b, b, b, b, b, b, b, b, b, b, b, b, b,
+    b, b, b, b, b, b,
   >>
   digest.Digest(digest.Blake3, bytes)
 }
 
 fn fake_pubkey(b: Int) -> pubkey.PublicKey {
   let bytes = <<
-    b, b, b, b, b, b, b, b, b, b, b, b, b, b, b, b,
-    b, b, b, b, b, b, b, b, b, b, b, b, b, b, b, b,
+    b, b, b, b, b, b, b, b, b, b, b, b, b, b, b, b, b, b, b, b, b, b, b, b, b, b,
+    b, b, b, b, b, b,
   >>
   pubkey.PublicKey(pubkey.Ed25519, bytes)
 }
@@ -42,8 +42,8 @@ fn empty() {
   kernel.empty()
 }
 
-fn push(cx, ty) {
-  kernel.push(cx, ty)
+fn push(cx, typ) {
+  kernel.push(cx, typ)
 }
 
 // ── shift ─────────────────────────────────────────────────────────────────────
@@ -253,7 +253,12 @@ pub fn def_eq_beta_test() {
 pub fn def_eq_delta_test() {
   let d = fake_digest(20)
   let store = make_store([#(d, term.Pi(term.Sort(0), term.Sort(0)))])
-  kernel.def_eq(store, kernel.test_fuel, term.Const(d), term.Pi(term.Sort(0), term.Sort(0)))
+  kernel.def_eq(
+    store,
+    kernel.test_fuel,
+    term.Const(d),
+    term.Pi(term.Sort(0), term.Sort(0)),
+  )
   |> should.equal(Ok(True))
 }
 
@@ -392,20 +397,32 @@ pub fn infer_hole_ill_formed_goal_rejected_test() {
 
 pub fn check_id_at_pi_type_test() {
   let id = term.Lam(term.Sort(0), term.Lam(term.Var(0), term.Var(0)))
-  let id_ty = term.Pi(term.Sort(0), term.Pi(term.Var(0), term.Var(1)))
-  kernel.check(no_store(), kernel.test_fuel, empty(), id, id_ty)
+  let id_typ = term.Pi(term.Sort(0), term.Pi(term.Var(0), term.Var(1)))
+  kernel.check(no_store(), kernel.test_fuel, empty(), id, id_typ)
   |> should.equal(Ok(Nil))
 }
 
 pub fn check_type_in_type_rejected_test() {
   // Sort(0) : Sort(1), not Sort(0)
-  kernel.check(no_store(), kernel.test_fuel, empty(), term.Sort(0), term.Sort(0))
+  kernel.check(
+    no_store(),
+    kernel.test_fuel,
+    empty(),
+    term.Sort(0),
+    term.Sort(0),
+  )
   |> should.be_error
 }
 
 pub fn check_mismatch_reports_types_test() {
   // infer Sort(0) = Sort(1); checking against Sort(99) should fail with Mismatch
-  kernel.check(no_store(), kernel.test_fuel, empty(), term.Sort(0), term.Sort(99))
+  kernel.check(
+    no_store(),
+    kernel.test_fuel,
+    empty(),
+    term.Sort(0),
+    term.Sort(99),
+  )
   |> should.equal(
     Error(kernel.Mismatch(expected: term.Sort(99), actual: term.Sort(1))),
   )
@@ -440,7 +457,7 @@ pub fn trusted_checks_weakly_test() {
 }
 
 pub fn trusted_rejects_wrong_result_type_test() {
-  // proc: (T:Type0) -> Type0; claim result_ty = Sort(5), but codomain[args] = Sort(0)
+  // proc: (T:Type0) -> Type0; claim result_typ = Sort(5), but codomain[args] = Sort(0)
   let proc = fake_digest(201)
   let proc_sig = term.Pi(term.Sort(0), term.Sort(0))
   let store = make_store([#(proc, proc_sig)])
@@ -499,7 +516,10 @@ fn corpus() -> List(term.Term) {
     term.Sort(3),
     term.App(id, term.App(id, term.Sort(2))),
     term.Sort(2),
-    term.Lam(term.Sort(0), term.App(term.Lam(term.Var(0), term.Var(0)), term.Var(0))),
+    term.Lam(
+      term.Sort(0),
+      term.App(term.Lam(term.Var(0), term.Var(0)), term.Var(0)),
+    ),
     term.Lam(term.Sort(0), term.Var(0)),
     term.Eq(term.Sort(0), term.App(id, term.Sort(0)), term.Sort(0)),
     term.Eq(term.Sort(0), term.Sort(0), term.Sort(0)),
@@ -539,10 +559,10 @@ pub fn def_eq_delta_agrees_with_normalize_test() {
 // produces another redex.
 fn nonterminating_env() {
   let loop_digest = fake_digest(250)
-  let loop_ty = term.Pi(term.Sort(0), term.Sort(0))
-  let sigs = fn(d: digest.Digest) {
+  let loop_typ = term.Pi(term.Sort(0), term.Sort(0))
+  let signatures = fn(d: digest.Digest) {
     case d == loop_digest {
-      True -> Some(loop_ty)
+      True -> Some(loop_typ)
       False -> None
     }
   }
@@ -552,7 +572,7 @@ fn nonterminating_env() {
     rewrite.Rule(
       lhs: rewrite.PApp(rewrite.PConst(loop_digest), rewrite.PVar(0)),
       rhs: term.App(term.Const(loop_digest), term.Var(0)),
-      nvars: 1,
+      var_count: 1,
     )
   let rules = fn(d: digest.Digest) {
     case d == loop_digest {
@@ -561,7 +581,11 @@ fn nonterminating_env() {
     }
   }
   #(
-    kernel.Env(defs: kernel.no_store(), sigs: sigs, rules: rules),
+    kernel.Environment(
+      definitions: kernel.no_store(),
+      signatures: signatures,
+      rules: rules,
+    ),
     term.App(term.Const(loop_digest), term.Sort(0)),
   )
 }
@@ -569,8 +593,8 @@ fn nonterminating_env() {
 pub fn fuel_exhausted_under_limited_fuel_test() {
   // A genuinely non-terminating rule set fails closed with FuelExhausted
   // under Limited(n) -- it does not hang the test suite.
-  let #(env, t) = nonterminating_env()
-  kernel.whnf(env, kernel.Limited(1000), t)
+  let #(environment, t) = nonterminating_env()
+  kernel.whnf(environment, kernel.Limited(1000), t)
   |> should.equal(Error(kernel.FuelExhausted))
 }
 
@@ -578,12 +602,12 @@ pub fn fuel_exhausted_under_limited_fuel_test() {
 // firings: `peel(peel(...peel(base)...))` (n layers) with the single rule
 // `peel(x) --> x`. Each firing consumes one unit of Limited fuel, so this
 // lets a test dial in exactly how much fuel a full reduction needs.
-fn peeling_env(depth: Int) -> #(kernel.Env, term.Term) {
+fn peeling_env(depth: Int) -> #(kernel.Environment, term.Term) {
   let peel_digest = fake_digest(251)
-  let peel_ty = term.Pi(term.Sort(0), term.Sort(0))
-  let sigs = fn(d: digest.Digest) {
+  let peel_typ = term.Pi(term.Sort(0), term.Sort(0))
+  let signatures = fn(d: digest.Digest) {
     case d == peel_digest {
-      True -> Some(peel_ty)
+      True -> Some(peel_typ)
       False -> None
     }
   }
@@ -591,7 +615,7 @@ fn peeling_env(depth: Int) -> #(kernel.Env, term.Term) {
     rewrite.Rule(
       lhs: rewrite.PApp(rewrite.PConst(peel_digest), rewrite.PVar(0)),
       rhs: term.Var(0),
-      nvars: 1,
+      var_count: 1,
     )
   let rules = fn(d: digest.Digest) {
     case d == peel_digest {
@@ -599,8 +623,13 @@ fn peeling_env(depth: Int) -> #(kernel.Env, term.Term) {
       False -> []
     }
   }
-  let env = kernel.Env(defs: kernel.no_store(), sigs: sigs, rules: rules)
-  #(env, peel_n(peel_digest, term.Sort(0), depth))
+  let environment =
+    kernel.Environment(
+      definitions: kernel.no_store(),
+      signatures: signatures,
+      rules: rules,
+    )
+  #(environment, peel_n(peel_digest, term.Sort(0), depth))
 }
 
 fn peel_n(peel_digest: digest.Digest, base: term.Term, n: Int) -> term.Term {
@@ -618,9 +647,9 @@ pub fn unlimited_is_a_distinct_code_path_test() {
   // were secretly Limited(some large N), it could only avoid
   // FuelExhausted by coincidence of N being big enough, whereas a rule set
   // with no counter at all is unaffected by depth entirely.
-  let #(env, deep) = peeling_env(50)
-  kernel.whnf(env, kernel.Limited(10), deep)
+  let #(environment, deep) = peeling_env(50)
+  kernel.whnf(environment, kernel.Limited(10), deep)
   |> should.equal(Error(kernel.FuelExhausted))
-  kernel.whnf(env, kernel.Unlimited, deep)
+  kernel.whnf(environment, kernel.Unlimited, deep)
   |> should.equal(Ok(term.Sort(0)))
 }

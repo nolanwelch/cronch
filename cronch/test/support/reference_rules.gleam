@@ -48,16 +48,19 @@ fn app6(f: Term, a: Term, b: Term, c: Term, d: Term, e: Term, g: Term) -> Term {
 // ── Sigma : (A : Type0) -> (A -> Type0) -> Type0 ───────────────────────────────
 
 /// `Sigma : (A : Type0) -> (A -> Type0) -> Type0`.
-pub fn sigma_ty() -> Term {
-  term.Pi(term.Sort(0), term.Pi(term.Pi(term.Var(0), term.Sort(0)), term.Sort(0)))
+pub fn sigma_typ() -> Term {
+  term.Pi(
+    term.Sort(0),
+    term.Pi(term.Pi(term.Var(0), term.Sort(0)), term.Sort(0)),
+  )
 }
 
 pub fn sigma_digest() -> Digest {
-  hash.hash(digest.Blake3, sigma_ty())
+  hash.hash(digest.Blake3, sigma_typ())
 }
 
 /// `pair : (A : Type0) -> (B : A -> Type0) -> (a : A) -> B a -> Sigma A B`.
-pub fn pair_ty() -> Term {
+pub fn pair_typ() -> Term {
   term.Pi(
     term.Sort(0),
     term.Pi(
@@ -74,11 +77,11 @@ pub fn pair_ty() -> Term {
 }
 
 pub fn pair_digest() -> Digest {
-  hash.hash(digest.Blake3, pair_ty())
+  hash.hash(digest.Blake3, pair_typ())
 }
 
 /// `fst : (A : Type0) -> (B : A -> Type0) -> Sigma A B -> A`.
-pub fn fst_ty() -> Term {
+pub fn fst_typ() -> Term {
   term.Pi(
     term.Sort(0),
     term.Pi(
@@ -92,11 +95,11 @@ pub fn fst_ty() -> Term {
 }
 
 pub fn fst_digest() -> Digest {
-  hash.hash(digest.Blake3, fst_ty())
+  hash.hash(digest.Blake3, fst_typ())
 }
 
 /// `snd : (A : Type0) -> (B : A -> Type0) -> (p : Sigma A B) -> B (fst A B p)`.
-pub fn snd_ty() -> Term {
+pub fn snd_typ() -> Term {
   term.Pi(
     term.Sort(0),
     term.Pi(
@@ -113,7 +116,7 @@ pub fn snd_ty() -> Term {
 }
 
 pub fn snd_digest() -> Digest {
-  hash.hash(digest.Blake3, snd_ty())
+  hash.hash(digest.Blake3, snd_typ())
 }
 
 // `fst A B (pair A B a b) --> a`. Slots: 0=A, 1=B, 2=a, 3=b.
@@ -135,7 +138,7 @@ pub fn fst_rule() -> Rule {
         rewrite.PVar(3),
       ),
     )
-  rewrite.Rule(lhs: lhs, rhs: term.Var(2), nvars: 4)
+  rewrite.Rule(lhs: lhs, rhs: term.Var(2), var_count: 4)
 }
 
 // `snd A B (pair A B a b) --> b`. Same shape as fst_rule, slots: 0=A, 1=B,
@@ -158,7 +161,7 @@ pub fn snd_rule() -> Rule {
         rewrite.PVar(3),
       ),
     )
-  rewrite.Rule(lhs: lhs, rhs: term.Var(3), nvars: 4)
+  rewrite.Rule(lhs: lhs, rhs: term.Var(3), var_count: 4)
 }
 
 // ── J : equality elimination, using the existing Eq/Refl primitives ───────────
@@ -167,8 +170,8 @@ pub fn snd_rule() -> Rule {
 /// `    (C : (x : A) -> (y : A) -> Eq A x y -> Type0) ->`
 /// `    (c : (x : A) -> C x x (Refl A x)) ->`
 /// `    (a : A) -> (b : A) -> (p : Eq A a b) -> C a b p`.
-pub fn j_ty() -> Term {
-  let motive_ty =
+pub fn j_typ() -> Term {
+  let motive_typ =
     term.Pi(
       term.Var(0),
       term.Pi(
@@ -176,14 +179,22 @@ pub fn j_ty() -> Term {
         term.Pi(term.Eq(term.Var(2), term.Var(1), term.Var(0)), term.Sort(0)),
       ),
     )
-  let case_refl_ty =
-    term.Pi(term.Var(1), app3(term.Var(1), term.Var(0), term.Var(0), term.Refl(term.Var(2), term.Var(0))))
+  let case_refl_typ =
+    term.Pi(
+      term.Var(1),
+      app3(
+        term.Var(1),
+        term.Var(0),
+        term.Var(0),
+        term.Refl(term.Var(2), term.Var(0)),
+      ),
+    )
   term.Pi(
     term.Sort(0),
     term.Pi(
-      motive_ty,
+      motive_typ,
       term.Pi(
-        case_refl_ty,
+        case_refl_typ,
         term.Pi(
           term.Var(2),
           term.Pi(
@@ -200,7 +211,7 @@ pub fn j_ty() -> Term {
 }
 
 pub fn j_digest() -> Digest {
-  hash.hash(digest.Blake3, j_ty())
+  hash.hash(digest.Blake3, j_typ())
 }
 
 // `J A C c a a (Refl A a) --> c a`. Slots: 0=A, 1=C, 2=c, 3=a (used for both
@@ -224,10 +235,10 @@ pub fn j_rule() -> Rule {
       ),
       rewrite.PRefl(rewrite.PVar(0), rewrite.PVar(3)),
     )
-  rewrite.Rule(lhs: lhs, rhs: term.App(term.Var(2), term.Var(3)), nvars: 4)
+  rewrite.Rule(lhs: lhs, rhs: term.App(term.Var(2), term.Var(3)), var_count: 4)
 }
 
-// ── The rule set, and an Env carrying it ───────────────────────────────────────
+// ── The rule set, and an Environment carrying it ───────────────────────────────────────
 
 /// The whole reference rule set, in a fixed order (order is part of its
 /// content address -- see serialize.encode_rule_set).
@@ -241,21 +252,21 @@ pub fn rule_set_hash() -> Digest {
   hash.hash_rule_set(digest.Blake3, rule_set())
 }
 
-fn sigs_table() -> List(#(Digest, Term)) {
+fn signatures_table() -> List(#(Digest, Term)) {
   [
-    #(sigma_digest(), sigma_ty()),
-    #(pair_digest(), pair_ty()),
-    #(fst_digest(), fst_ty()),
-    #(snd_digest(), snd_ty()),
-    #(j_digest(), j_ty()),
+    #(sigma_digest(), sigma_typ()),
+    #(pair_digest(), pair_typ()),
+    #(fst_digest(), fst_typ()),
+    #(snd_digest(), snd_typ()),
+    #(j_digest(), j_typ()),
   ]
 }
 
 /// The SignatureStore for all five axiomatic constants declared here.
-pub fn sigs() -> kernel.SignatureStore {
+pub fn signatures() -> kernel.SignatureStore {
   fn(d: Digest) -> Option(Term) {
-    case list.find(sigs_table(), fn(e) { e.0 == d }) {
-      Ok(#(_, ty)) -> Some(ty)
+    case list.find(signatures_table(), fn(e) { e.0 == d }) {
+      Ok(#(_, typ)) -> Some(typ)
       Error(_) -> None
     }
   }
@@ -276,10 +287,14 @@ pub fn rules() -> kernel.RuleStore {
   }
 }
 
-/// An Env with no other definitions, just this reference rule set's
+/// An Environment with no other definitions, just this reference rule set's
 /// axiomatic constants and rules.
-pub fn env() -> kernel.Env {
-  kernel.Env(defs: kernel.no_store(), sigs: sigs(), rules: rules())
+pub fn environment() -> kernel.Environment {
+  kernel.Environment(
+    definitions: kernel.no_store(),
+    signatures: signatures(),
+    rules: rules(),
+  )
 }
 
 // ── Example reductions (untyped -- these exercise whnf/normalize directly,
@@ -312,7 +327,7 @@ pub fn snd_pair_example() -> #(Term, Term) {
 /// `J A C c a a (Refl A a)`, reducing to `c a` and then on to whatever that
 /// beta-reduces to.
 pub fn j_example() -> #(Term, Term) {
-  let a_ty = term.Sort(0)
+  let a_typ = term.Sort(0)
   let motive =
     term.Lam(
       term.Sort(0),
@@ -323,8 +338,16 @@ pub fn j_example() -> #(Term, Term) {
     )
   let case_refl = term.Lam(term.Sort(0), term.Var(0))
   let elem = term.Sort(9)
-  let refl_proof = term.Refl(a_ty, elem)
+  let refl_proof = term.Refl(a_typ, elem)
   let artifact =
-    app6(term.Const(j_digest()), a_ty, motive, case_refl, elem, elem, refl_proof)
+    app6(
+      term.Const(j_digest()),
+      a_typ,
+      motive,
+      case_refl,
+      elem,
+      elem,
+      refl_proof,
+    )
   #(artifact, elem)
 }

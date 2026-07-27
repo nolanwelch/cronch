@@ -17,9 +17,9 @@
 ///   Refl(A, a)        tag 0x06 | term A | term a
 ///   Const(d)          tag 0x07 | digest d
 ///   Hole(id, A)       tag 0x08 | varint id | term A
-///   Trusted(...)      tag 0x09 | pubkey host | digest proc | term args | term result_ty
+///   Trusted(...)      tag 0x09 | pubkey host | digest proc | term args | term result_typ
 ///
-/// digest  = algo_tag(1) | bytes(digest_size(algo))
+/// digest  = algo_tag(1) | bytes(digest_size(algorithm))
 /// pubkey  = scheme_tag(1) | bytes(key_size(scheme))
 /// varint  = canonical little-endian base-128, u32 range
 ///
@@ -87,38 +87,38 @@ fn encode_tree(t: Term) -> BytesTree {
       |> bytes_tree.append_tree(encode_tree(f))
       |> bytes_tree.append_tree(encode_tree(a))
 
-    term.Eq(ty, a, b) ->
+    term.Eq(typ, a, b) ->
       bytes_tree.from_bit_array(<<0x05>>)
-      |> bytes_tree.append_tree(encode_tree(ty))
+      |> bytes_tree.append_tree(encode_tree(typ))
       |> bytes_tree.append_tree(encode_tree(a))
       |> bytes_tree.append_tree(encode_tree(b))
 
-    term.Refl(ty, a) ->
+    term.Refl(typ, a) ->
       bytes_tree.from_bit_array(<<0x06>>)
-      |> bytes_tree.append_tree(encode_tree(ty))
+      |> bytes_tree.append_tree(encode_tree(typ))
       |> bytes_tree.append_tree(encode_tree(a))
 
     term.Const(hash_val) ->
       bytes_tree.from_bit_array(<<0x07>>)
       |> bytes_tree.append_tree(encode_digest(hash_val))
 
-    term.Hole(id, ty) ->
+    term.Hole(id, typ) ->
       bytes_tree.from_bit_array(<<0x08>>)
       |> bytes_tree.append_tree(encode_varint(id))
-      |> bytes_tree.append_tree(encode_tree(ty))
+      |> bytes_tree.append_tree(encode_tree(typ))
 
-    term.Trusted(host, proc, args, result_ty) ->
+    term.Trusted(host, proc, args, result_typ) ->
       bytes_tree.from_bit_array(<<0x09>>)
       |> bytes_tree.append_tree(encode_pubkey(host))
       |> bytes_tree.append_tree(encode_digest(proc))
       |> bytes_tree.append_tree(encode_tree(args))
-      |> bytes_tree.append_tree(encode_tree(result_ty))
+      |> bytes_tree.append_tree(encode_tree(result_typ))
   }
 }
 
 fn encode_digest(d: Digest) -> BytesTree {
-  let digest.Digest(algo, bytes) = d
-  let tag = digest.algorithm_tag(algo)
+  let digest.Digest(algorithm, bytes) = d
+  let tag = digest.algorithm_tag(algorithm)
 
   bytes_tree.from_bit_array(<<tag>>)
   |> bytes_tree.append(bytes)
@@ -172,9 +172,9 @@ fn encode_pattern_tree(p: Pattern) -> BytesTree {
       |> bytes_tree.append_tree(encode_pattern_tree(f))
       |> bytes_tree.append_tree(encode_pattern_tree(a))
 
-    rewrite.PRefl(ty, val) ->
+    rewrite.PRefl(typ, val) ->
       bytes_tree.from_bit_array(<<0x04>>)
-      |> bytes_tree.append_tree(encode_pattern_tree(ty))
+      |> bytes_tree.append_tree(encode_pattern_tree(typ))
       |> bytes_tree.append_tree(encode_pattern_tree(val))
   }
 }
@@ -185,7 +185,7 @@ pub fn encode_pattern(p: Pattern) -> BitArray {
   bytes_tree.to_bit_array(encode_pattern_tree(p))
 }
 
-/// Canonical serialization of a Rule: lhs pattern | rhs term | varint nvars.
+/// Canonical serialization of a Rule: lhs pattern | rhs term | varint var_count.
 pub fn encode_rule(r: Rule) -> BitArray {
   bytes_tree.to_bit_array(encode_rule_tree(r))
 }
@@ -193,7 +193,7 @@ pub fn encode_rule(r: Rule) -> BitArray {
 fn encode_rule_tree(r: Rule) -> BytesTree {
   encode_pattern_tree(r.lhs)
   |> bytes_tree.append_tree(encode_tree(r.rhs))
-  |> bytes_tree.append_tree(encode_varint(r.nvars))
+  |> bytes_tree.append_tree(encode_varint(r.var_count))
 }
 
 /// Canonical serialization of a rule set: varint count | rule*count, in
@@ -259,15 +259,15 @@ fn decode_by_tag(
       Ok(#(term.App(f, a), r3))
     }
     0x05 -> {
-      use #(ty, r2) <- result.try(decode_term(rest))
+      use #(typ, r2) <- result.try(decode_term(rest))
       use #(a, r3) <- result.try(decode_term(r2))
       use #(b, r4) <- result.try(decode_term(r3))
-      Ok(#(term.Eq(ty, a, b), r4))
+      Ok(#(term.Eq(typ, a, b), r4))
     }
     0x06 -> {
-      use #(ty, r2) <- result.try(decode_term(rest))
+      use #(typ, r2) <- result.try(decode_term(rest))
       use #(a, r3) <- result.try(decode_term(r2))
-      Ok(#(term.Refl(ty, a), r3))
+      Ok(#(term.Refl(typ, a), r3))
     }
     0x07 -> {
       use #(hash_val, r) <- result.try(decode_digest(rest))
@@ -275,15 +275,15 @@ fn decode_by_tag(
     }
     0x08 -> {
       use #(id, r2) <- result.try(decode_varint(rest))
-      use #(ty, r3) <- result.try(decode_term(r2))
-      Ok(#(term.Hole(id, ty), r3))
+      use #(typ, r3) <- result.try(decode_term(r2))
+      Ok(#(term.Hole(id, typ), r3))
     }
     0x09 -> {
       use #(host, r2) <- result.try(decode_pubkey(rest))
       use #(proc, r3) <- result.try(decode_digest(r2))
       use #(args, r4) <- result.try(decode_term(r3))
-      use #(result_ty, r5) <- result.try(decode_term(r4))
-      Ok(#(term.Trusted(host, proc, args, result_ty), r5))
+      use #(result_typ, r5) <- result.try(decode_term(r4))
+      Ok(#(term.Trusted(host, proc, args, result_typ), r5))
     }
     other -> Error(UnknownTag(other))
   }
@@ -294,11 +294,11 @@ fn decode_digest(data: BitArray) -> Result(#(Digest, BitArray), DecodeError) {
     <<algo_tag, rest:bits>> ->
       case digest.decode_algorithm_tag(algo_tag) {
         Error(Nil) -> Error(UnknownHashAlgorithm(algo_tag))
-        Ok(algo) -> {
-          let n = digest.digest_size(algo) * 8
+        Ok(algorithm) -> {
+          let n = digest.digest_size(algorithm) * 8
           case rest {
             <<bytes:bits-size(n), r:bits>> ->
-              Ok(#(digest.Digest(algo, bytes), r))
+              Ok(#(digest.Digest(algorithm, bytes), r))
             _ -> Error(Truncated)
           }
         }
@@ -411,9 +411,9 @@ fn decode_pattern_by_tag(
       Ok(#(rewrite.PApp(f, a), r3))
     }
     0x04 -> {
-      use #(ty, r2) <- result.try(decode_pattern_term(rest))
+      use #(typ, r2) <- result.try(decode_pattern_term(rest))
       use #(val, r3) <- result.try(decode_pattern_term(r2))
-      Ok(#(rewrite.PRefl(ty, val), r3))
+      Ok(#(rewrite.PRefl(typ, val), r3))
     }
     other -> Error(UnknownPatternTag(other))
   }
@@ -431,8 +431,8 @@ pub fn decode_rule(bytes: BitArray) -> Result(Rule, DecodeError) {
 fn decode_rule_term(data: BitArray) -> Result(#(Rule, BitArray), DecodeError) {
   use #(lhs, r1) <- result.try(decode_pattern_term(data))
   use #(rhs, r2) <- result.try(decode_term(r1))
-  use #(nvars, r3) <- result.try(decode_varint(r2))
-  Ok(#(rewrite.Rule(lhs: lhs, rhs: rhs, nvars: nvars), r3))
+  use #(var_count, r3) <- result.try(decode_varint(r2))
+  Ok(#(rewrite.Rule(lhs: lhs, rhs: rhs, var_count: var_count), r3))
 }
 
 /// Decode canonical bytes into a rule set (a list of Rules, in order).

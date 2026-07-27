@@ -27,16 +27,16 @@ fn make_store(entries: List(#(digest.Digest, term.Term))) -> trust.Store {
 
 fn fake_host(b: Int) -> pubkey.PublicKey {
   let bytes = <<
-    b, b, b, b, b, b, b, b, b, b, b, b, b, b, b, b,
-    b, b, b, b, b, b, b, b, b, b, b, b, b, b, b, b,
+    b, b, b, b, b, b, b, b, b, b, b, b, b, b, b, b, b, b, b, b, b, b, b, b, b, b,
+    b, b, b, b, b, b,
   >>
   pubkey.PublicKey(pubkey.Ed25519, bytes)
 }
 
 fn fake_proc(b: Int) -> digest.Digest {
   let bytes = <<
-    b, b, b, b, b, b, b, b, b, b, b, b, b, b, b, b,
-    b, b, b, b, b, b, b, b, b, b, b, b, b, b, b, b,
+    b, b, b, b, b, b, b, b, b, b, b, b, b, b, b, b, b, b, b, b, b, b, b, b, b, b,
+    b, b, b, b, b, b,
   >>
   digest.Digest(digest.Blake3, bytes)
 }
@@ -127,8 +127,7 @@ pub fn proc_reference_followed_test() {
   let proc_obj = term.Pi(term.Sort(0), term.Const(inner_addr))
   let proc_addr = hash.hash(digest.Blake3, proc_obj)
 
-  let store =
-    make_store([#(inner_addr, inner), #(proc_addr, proc_obj)])
+  let store = make_store([#(inner_addr, inner), #(proc_addr, proc_obj)])
 
   let outer_host = fake_host(0x0a)
   let root = term.Trusted(outer_host, proc_addr, term.Sort(0), term.Sort(0))
@@ -136,7 +135,9 @@ pub fn proc_reference_followed_test() {
 
   set |> list.length |> should.equal(2)
   set |> list.contains(trust.HostTrust(outer_host, proc_addr)) |> should.be_true
-  set |> list.contains(trust.HostTrust(inner_host, inner_proc)) |> should.be_true
+  set
+  |> list.contains(trust.HostTrust(inner_host, inner_proc))
+  |> should.be_true
 }
 
 pub fn cycle_guard_no_infinite_loop_test() {
@@ -234,8 +235,7 @@ pub fn purist_denies_welltyped_host_test() {
   let proc = hash.hash(digest.Blake3, proc_sig)
   let store = make_store([#(proc, proc_sig)])
   let host = fake_host(0x01)
-  let root =
-    term.Trusted(host, proc, term.Sort(0), term.Sort(5))
+  let root = term.Trusted(host, proc, term.Sort(0), term.Sort(5))
   let set = trust.trust_set(store, root)
   // Trust set has one entry.
   set |> list.length |> should.equal(1)
@@ -296,7 +296,14 @@ pub fn verify_host_result_valid_test() {
   let result = term.Sort(5)
   let msg = trust.host_message(proc, args, result)
   let sig = ffi_sign_ed25519(msg, priv_bytes)
-  let r = trust.HostResult(host: host, proc: proc, args: args, result: result, signature: sig)
+  let r =
+    trust.HostResult(
+      host: host,
+      proc: proc,
+      args: args,
+      result: result,
+      signature: sig,
+    )
   trust.verify_host_result(r) |> should.be_true
 }
 
@@ -311,8 +318,11 @@ pub fn verify_host_result_tampered_result_test() {
   // Tamper: change result
   let r =
     trust.HostResult(
-      host: host, proc: proc, args: args,
-      result: term.Sort(6), signature: sig,
+      host: host,
+      proc: proc,
+      args: args,
+      result: term.Sort(6),
+      signature: sig,
     )
   trust.verify_host_result(r) |> should.be_false
 }
@@ -327,7 +337,14 @@ pub fn verify_host_result_wrong_key_test() {
   let result = term.Sort(5)
   let msg = trust.host_message(proc, args, result)
   let sig = ffi_sign_ed25519(msg, priv_bytes)
-  let r = trust.HostResult(host: host, proc: proc, args: args, result: result, signature: sig)
+  let r =
+    trust.HostResult(
+      host: host,
+      proc: proc,
+      args: args,
+      result: result,
+      signature: sig,
+    )
   trust.verify_host_result(r) |> should.be_false
 }
 
@@ -339,14 +356,17 @@ pub fn verify_host_result_bad_signature_test() {
   let result = term.Sort(5)
   // All-zero signature -- invalid
   let bad_sig = <<
-    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
   >>
   let r =
     trust.HostResult(
-      host: host, proc: proc, args: args, result: result, signature: bad_sig,
+      host: host,
+      proc: proc,
+      args: args,
+      result: result,
+      signature: bad_sig,
     )
   trust.verify_host_result(r) |> should.be_false
 }
@@ -373,10 +393,7 @@ pub fn policy_treats_host_and_rule_set_dependencies_independently_test() {
   trust.unauthorized(set, trust.policy_with_rule_sets([#(author, rule_hash)]))
   |> should.equal([trust.HostTrust(host, proc)])
 
-  trust.is_authorized(
-    set,
-    trust.policy_with([host], [#(author, rule_hash)]),
-  )
+  trust.is_authorized(set, trust.policy_with([host], [#(author, rule_hash)]))
   |> should.be_true
 }
 
@@ -395,12 +412,12 @@ pub fn policy_rule_set_authorization_is_pinned_to_exact_hash_test() {
 
 // ── trust_set_with_rules ────────────────────────────────────────────────────────
 
-// A minimal env: one axiomatic constant `f` with a single rewrite rule
+// A minimal environment: one axiomatic constant `f` with a single rewrite rule
 // `f x --> x`, so `f (Sort 0)` normalizes to `Sort 0` only by invoking the
 // rule set.
-fn strip_env() -> #(kernel.Env, digest.Digest) {
+fn strip_env() -> #(kernel.Environment, digest.Digest) {
   let f_digest = fake_proc(0x10)
-  let sigs = fn(d: digest.Digest) {
+  let signatures = fn(d: digest.Digest) {
     case d == f_digest {
       True -> Some(term.Pi(term.Sort(0), term.Sort(0)))
       False -> None
@@ -410,7 +427,7 @@ fn strip_env() -> #(kernel.Env, digest.Digest) {
     rewrite.Rule(
       lhs: rewrite.PApp(rewrite.PConst(f_digest), rewrite.PVar(0)),
       rhs: term.Var(0),
-      nvars: 1,
+      var_count: 1,
     )
   let rules = fn(d: digest.Digest) {
     case d == f_digest {
@@ -418,28 +435,45 @@ fn strip_env() -> #(kernel.Env, digest.Digest) {
       False -> []
     }
   }
-  #(kernel.Env(defs: kernel.no_store(), sigs: sigs, rules: rules), f_digest)
+  #(
+    kernel.Environment(
+      definitions: kernel.no_store(),
+      signatures: signatures,
+      rules: rules,
+    ),
+    f_digest,
+  )
 }
 
 pub fn trust_set_with_rules_reports_the_rule_set_used_test() {
-  let #(env, f_digest) = strip_env()
+  let #(environment, f_digest) = strip_env()
   let author = fake_host(0x11)
   let rule_set_hash = fake_proc(0x12)
   let tag = kernel.RuleUse(author: author, rule_set: rule_set_hash)
-  let prov = fn(d: digest.Digest) {
+  let provenance = fn(d: digest.Digest) {
     case d == f_digest {
-      True -> [#(tag, rewrite.Rule(
-        lhs: rewrite.PApp(rewrite.PConst(f_digest), rewrite.PVar(0)),
-        rhs: term.Var(0),
-        nvars: 1,
-      ))]
+      True -> [
+        #(
+          tag,
+          rewrite.Rule(
+            lhs: rewrite.PApp(rewrite.PConst(f_digest), rewrite.PVar(0)),
+            rhs: term.Var(0),
+            var_count: 1,
+          ),
+        ),
+      ]
       False -> []
     }
   }
   let artifact = term.App(term.Const(f_digest), term.Sort(0))
 
   let assert Ok(set) =
-    trust.trust_set_with_rules(env, kernel.test_fuel, prov, artifact)
+    trust.trust_set_with_rules(
+      environment,
+      kernel.test_fuel,
+      provenance,
+      artifact,
+    )
   set |> should.equal([trust.RuleSetTrust(author, rule_set_hash)])
 
   trust.is_authorized(set, trust.empty_policy()) |> should.be_false
@@ -452,23 +486,33 @@ pub fn trust_set_with_rules_reports_the_rule_set_used_test() {
 
 pub fn trust_set_with_rules_is_empty_when_no_rule_fires_test() {
   // A term that never invokes the axiomatic constant at all has no
-  // rule-set trust dependency, even though the Env carries rules.
-  let #(env, _f_digest) = strip_env()
-  let prov = fn(_: digest.Digest) { [] }
+  // rule-set trust dependency, even though the Environment carries rules.
+  let #(environment, _f_digest) = strip_env()
+  let provenance = fn(_: digest.Digest) { [] }
   let artifact = term.Sort(0)
-  trust.trust_set_with_rules(env, kernel.test_fuel, prov, artifact)
+  trust.trust_set_with_rules(
+    environment,
+    kernel.test_fuel,
+    provenance,
+    artifact,
+  )
   |> should.equal(Ok([]))
 }
 
 pub fn trust_set_with_rules_includes_host_dependencies_too_test() {
   // trust_set_with_rules must not drop the ordinary Trusted/Const walk --
   // it is additive on top of it.
-  let #(env, _f_digest) = strip_env()
+  let #(environment, _f_digest) = strip_env()
   let host = fake_host(0x13)
   let proc = fake_proc(0x14)
-  let prov = fn(_: digest.Digest) { [] }
+  let provenance = fn(_: digest.Digest) { [] }
   let artifact = term.Trusted(host, proc, term.Sort(0), term.Sort(0))
-  trust.trust_set_with_rules(env, kernel.test_fuel, prov, artifact)
+  trust.trust_set_with_rules(
+    environment,
+    kernel.test_fuel,
+    provenance,
+    artifact,
+  )
   |> should.equal(Ok([trust.HostTrust(host, proc)]))
 }
 

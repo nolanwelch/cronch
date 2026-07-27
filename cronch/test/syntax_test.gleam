@@ -13,31 +13,30 @@ import gleeunit/should
 
 fn zero_bytes32() -> BitArray {
   <<
-    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0,
   >>
 }
 
 fn ab_bytes32() -> BitArray {
   <<
-    0xab, 0xab, 0xab, 0xab, 0xab, 0xab, 0xab, 0xab,
-    0xab, 0xab, 0xab, 0xab, 0xab, 0xab, 0xab, 0xab,
-    0xab, 0xab, 0xab, 0xab, 0xab, 0xab, 0xab, 0xab,
-    0xab, 0xab, 0xab, 0xab, 0xab, 0xab, 0xab, 0xab,
+    0xab, 0xab, 0xab, 0xab, 0xab, 0xab, 0xab, 0xab, 0xab, 0xab, 0xab, 0xab, 0xab,
+    0xab, 0xab, 0xab, 0xab, 0xab, 0xab, 0xab, 0xab, 0xab, 0xab, 0xab, 0xab, 0xab,
+    0xab, 0xab, 0xab, 0xab, 0xab, 0xab,
   >>
 }
 
 fn b1_bytes32() -> BitArray {
   <<
-    1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
-    1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+    1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+    1, 1, 1, 1, 1, 1,
   >>
 }
 
 fn b2_bytes32() -> BitArray {
   <<
-    2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2,
-    2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2,
+    2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2,
+    2, 2, 2, 2, 2, 2,
   >>
 }
 
@@ -52,10 +51,10 @@ fn ab_digest() -> digest.Digest {
 // ── Lexer tests ───────────────────────────────────────────────────────────────
 
 pub fn lex_punctuation_and_words_test() {
-  let toks =
+  let tokens =
     lex.lex("fun (x : A) -> B := lam y => z -- comment\n")
     |> should.be_ok
-  toks
+  tokens
   |> should.equal([
     lex.Word("fun"),
     lex.LParen,
@@ -117,10 +116,7 @@ pub fn parse_lam_test() {
 pub fn parse_app_left_assoc_test() {
   let e = parse.parse_expr("f x y") |> should.be_ok
   let expected =
-    parse.EApp(
-      parse.EApp(parse.EName("f"), parse.EName("x")),
-      parse.EName("y"),
-    )
+    parse.EApp(parse.EApp(parse.EName("f"), parse.EName("x")), parse.EName("y"))
   e |> should.equal(expected)
 }
 
@@ -137,9 +133,11 @@ pub fn parse_arrow_right_assoc_test() {
 pub fn parse_eq_refl_test() {
   parse.parse_expr("Eq A a b")
   |> should.be_ok
-  |> should.equal(
-    parse.EEq(parse.EName("A"), parse.EName("a"), parse.EName("b")),
-  )
+  |> should.equal(parse.EEq(
+    parse.EName("A"),
+    parse.EName("a"),
+    parse.EName("b"),
+  ))
   parse.parse_expr("refl A a")
   |> should.be_ok
   |> should.equal(parse.ERefl(parse.EName("A"), parse.EName("a")))
@@ -152,7 +150,7 @@ pub fn parse_var_ix_test() {
 pub fn parse_hole_expr_test() {
   parse.parse_expr("hole 0 : Type 1")
   |> should.be_ok
-  |> should.equal(parse.EHole(parse.HoleNum(0), parse.ESort(1)))
+  |> should.equal(parse.EHole(parse.HoleNumber(0), parse.ESort(1)))
 }
 
 pub fn parse_hole_named_test() {
@@ -238,9 +236,7 @@ pub fn print_pi_always_dependent_test() {
   let t = term.Pi(term.Sort(0), term.Pi(term.Var(0), term.Var(1)))
   let printed = print.print_term(t)
   printed
-  |> should.equal(
-    "fun (x0 : Type 0) -> fun (x1 : x0) -> x0",
-  )
+  |> should.equal("fun (x0 : Type 0) -> fun (x1 : x0) -> x0")
 }
 
 pub fn print_hole_test() {
@@ -285,8 +281,7 @@ pub fn round_trip_pi_id_type_test() {
 }
 
 pub fn round_trip_lam_id_test() {
-  let id =
-    term.Lam(term.Sort(0), term.Lam(term.Var(0), term.Var(0)))
+  let id = term.Lam(term.Sort(0), term.Lam(term.Var(0), term.Var(0)))
   round_trip(id)
 }
 
@@ -294,9 +289,7 @@ pub fn round_trip_app_test() {
   let id = term.Lam(term.Sort(0), term.Lam(term.Var(0), term.Var(0)))
   round_trip(term.App(id, term.Sort(3)))
   // nested App
-  round_trip(
-    term.App(term.App(term.Var(0), term.Var(1)), term.Var(2)),
-  )
+  round_trip(term.App(term.App(term.Var(0), term.Var(1)), term.Var(2)))
 }
 
 pub fn round_trip_eq_refl_test() {
@@ -330,11 +323,9 @@ pub fn round_trip_trusted_test() {
 }
 
 pub fn round_trip_eq_with_compound_children_test() {
-  // Eq ty (App ...) rhs -- arguments need parentheses in atom position
+  // Eq typ (App ...) rhs -- arguments need parentheses in atom position
   let id = term.Lam(term.Sort(0), term.Lam(term.Var(0), term.Var(0)))
-  round_trip(
-    term.Eq(term.Sort(0), term.App(id, term.Sort(0)), term.Sort(0)),
-  )
+  round_trip(term.Eq(term.Sort(0), term.App(id, term.Sort(0)), term.Sort(0)))
 }
 
 // ── Elaborator tests ──────────────────────────────────────────────────────────
@@ -353,9 +344,7 @@ pub fn elab_arrow_sugar_test() {
   let e = parse.parse_expr(src) |> should.be_ok
   elab.elaborate_closed(e, elab.Proof)
   |> should.be_ok
-  |> should.equal(
-    term.Pi(term.Sort(0), term.Pi(term.Var(0), term.Var(1))),
-  )
+  |> should.equal(term.Pi(term.Sort(0), term.Pi(term.Var(0), term.Var(1))))
 }
 
 pub fn elab_unbound_name_error_test() {
@@ -373,7 +362,7 @@ pub fn elab_trusted_in_proof_position_error_test() {
       host: host,
       proc: parse.ProcDigest(proc),
       args: parse.ESort(0),
-      result_ty: parse.ESort(0),
+      result_typ: parse.ESort(0),
     )
   elab.elaborate_closed(e, elab.Proof)
   |> should.be_error
@@ -388,7 +377,7 @@ pub fn elab_trusted_in_runtime_position_ok_test() {
       host: host,
       proc: parse.ProcDigest(proc),
       args: parse.ESort(0),
-      result_ty: parse.ESort(0),
+      result_typ: parse.ESort(0),
     )
   elab.elaborate_closed(e, elab.Runtime)
   |> should.be_ok
@@ -396,7 +385,8 @@ pub fn elab_trusted_in_runtime_position_ok_test() {
 }
 
 pub fn elab_module_basic_test() {
-  let src = "define id : fun (A : Type 0) -> A -> A := lam (A : Type 0) => lam (a : A) => a"
+  let src =
+    "define id : fun (A : Type 0) -> A -> A := lam (A : Type 0) => lam (a : A) => a"
   let items = parse.parse_module(src) |> should.be_ok
   let m = elab.elaborate_module(items) |> should.be_ok
   m.entries |> list.length |> should.equal(1)
@@ -408,9 +398,7 @@ pub fn elab_module_basic_test() {
   entry.kind |> should.equal(elab.DefineKind)
   // The elaborated term should be the polymorphic identity function
   entry.term
-  |> should.equal(
-    term.Lam(term.Sort(0), term.Lam(term.Var(0), term.Var(0))),
-  )
+  |> should.equal(term.Lam(term.Sort(0), term.Lam(term.Var(0), term.Var(0))))
 }
 
 pub fn elab_module_name_resolution_test() {
@@ -424,7 +412,7 @@ pub fn elab_module_name_resolution_test() {
     [_, e] -> e
     _ -> panic as "expected two entries"
   }
-  // use_base's body should be Const(addr of base)
+  // use_base's body should be Const(address of base)
   case use_entry.term {
     term.Const(_) -> should.be_true(True)
     _ -> should.be_true(False)
@@ -456,7 +444,7 @@ pub fn elab_module_hole_item_test() {
 }
 
 pub fn elab_module_trusted_in_runtime_test() {
-  // A runtime item using a trusted node with proc name resolved from env.
+  // A runtime item using a trusted node with proc name resolved from environment.
   let host_hex = string_repeat("01", 32)
   let proc_hex = string_repeat("02", 32)
   let src =

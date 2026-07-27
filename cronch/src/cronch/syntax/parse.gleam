@@ -5,7 +5,7 @@
 /// the colon token unambiguous for type annotations.
 import cronch/digest
 import cronch/pubkey
-import cronch/syntax/lex.{type Tok}
+import cronch/syntax/lex.{type Token}
 import gleam/bit_array
 import gleam/list
 import gleam/string
@@ -15,7 +15,7 @@ import gleam/string
 /// How a hole's id was written: an explicit number or a name (fresh id allocated
 /// during elaboration).
 pub type HoleSpec {
-  HoleNum(Int)
+  HoleNumber(Int)
   HoleName(String)
 }
 
@@ -44,24 +44,24 @@ pub type Expr {
   ELam(String, Expr, Expr)
   /// Application `f a`.
   EApp(Expr, Expr)
-  /// Propositional equality `Eq ty a b`.
+  /// Propositional equality `Eq typ a b`.
   EEq(Expr, Expr, Expr)
-  /// Reflexivity `refl ty a`.
+  /// Reflexivity `refl typ a`.
   ERefl(Expr, Expr)
   /// Open obligation `hole spec : goal`.
   EHole(HoleSpec, Expr)
-  /// Host-authority result `trusted host proc args : result_ty`.
-  ETrusted(host: pubkey.PublicKey, proc: ProcRef, args: Expr, result_ty: Expr)
+  /// Host-authority result `trusted host proc args : result_typ`.
+  ETrusted(host: pubkey.PublicKey, proc: ProcRef, args: Expr, result_typ: Expr)
 }
 
 /// Top-level item.
 pub type Item {
   /// `define name : T := e`  (proof position; `trusted` not allowed in body).
-  Define(name: String, ty: Expr, body: Expr)
+  Define(name: String, typ: Expr, body: Expr)
   /// `runtime name : T := e`  (runtime position; `trusted` allowed in body).
-  Runtime(name: String, ty: Expr, body: Expr)
+  Runtime(name: String, typ: Expr, body: Expr)
   /// `hole name : T`  (a standalone open obligation).
-  HoleItem(name: String, ty: Expr)
+  HoleItem(name: String, typ: Expr)
 }
 
 pub type ParseError {
@@ -72,12 +72,12 @@ pub type ParseError {
 
 /// A parser result: either `(value, remaining_tokens)` or an error.
 type PR(a) =
-  Result(#(a, List(Tok)), ParseError)
+  Result(#(a, List(Token)), ParseError)
 
 // ── Token helpers ─────────────────────────────────────────────────────────────
 
-fn expect(toks: List(Tok), want: Tok) -> Result(List(Tok), ParseError) {
-  case toks {
+fn expect(tokens: List(Token), want: Token) -> Result(List(Token), ParseError) {
+  case tokens {
     [t, ..rest] if t == want -> Ok(rest)
     other ->
       Error(ParseError(
@@ -89,16 +89,20 @@ fn expect(toks: List(Tok), want: Tok) -> Result(List(Tok), ParseError) {
   }
 }
 
-fn expect_word(toks: List(Tok)) -> Result(#(String, List(Tok)), ParseError) {
-  case toks {
+fn expect_word(
+  tokens: List(Token),
+) -> Result(#(String, List(Token)), ParseError) {
+  case tokens {
     [lex.Word(w), ..rest] -> Ok(#(w, rest))
     other ->
       Error(ParseError("expected a word, found " <> first_tok_string(other)))
   }
 }
 
-fn expect_name(toks: List(Tok)) -> Result(#(String, List(Tok)), ParseError) {
-  case expect_word(toks) {
+fn expect_name(
+  tokens: List(Token),
+) -> Result(#(String, List(Token)), ParseError) {
+  case expect_word(tokens) {
     Error(e) -> Error(e)
     Ok(#(w, rest)) ->
       case is_keyword(w) {
@@ -132,9 +136,9 @@ fn parse_digest_word(w: String) -> Result(digest.Digest, ParseError) {
         })
       {
         Error(_) -> Error(ParseError("unknown hash algorithm: " <> algo_name))
-        Ok(algo) ->
+        Ok(algorithm) ->
           case bit_array.base16_decode(string.uppercase(hex)) {
-            Ok(bytes) -> Ok(digest.Digest(algo, bytes))
+            Ok(bytes) -> Ok(digest.Digest(algorithm, bytes))
             Error(_) -> Error(ParseError("invalid hex in address: " <> hex))
           }
       }
@@ -176,8 +180,10 @@ fn is_digest_word(w: String) -> Bool {
 
 // ── Sub-parsers ───────────────────────────────────────────────────────────────
 
-fn parse_num(toks: List(Tok)) -> Result(#(Int, List(Tok)), ParseError) {
-  case expect_word(toks) {
+fn parse_number(
+  tokens: List(Token),
+) -> Result(#(Int, List(Token)), ParseError) {
+  case expect_word(tokens) {
     Error(e) -> Error(e)
     Ok(#(w, rest)) ->
       case int_of_string(w) {
@@ -188,24 +194,24 @@ fn parse_num(toks: List(Tok)) -> Result(#(Int, List(Tok)), ParseError) {
 }
 
 fn parse_binder_group(
-  toks: List(Tok),
-) -> Result(#(#(String, Expr), List(Tok)), ParseError) {
-  use toks <- chain(expect(toks, lex.LParen))
-  use #(name, toks) <- chain(expect_name(toks))
-  use toks <- chain(expect(toks, lex.Colon))
-  use #(ty, toks) <- chain(parse_term(toks))
-  use toks <- chain(expect(toks, lex.RParen))
-  Ok(#(#(name, ty), toks))
+  tokens: List(Token),
+) -> Result(#(#(String, Expr), List(Token)), ParseError) {
+  use tokens <- chain(expect(tokens, lex.LParen))
+  use #(name, tokens) <- chain(expect_name(tokens))
+  use tokens <- chain(expect(tokens, lex.Colon))
+  use #(typ, tokens) <- chain(parse_term(tokens))
+  use tokens <- chain(expect(tokens, lex.RParen))
+  Ok(#(#(name, typ), tokens))
 }
 
 fn parse_hole_spec(
-  toks: List(Tok),
-) -> Result(#(HoleSpec, List(Tok)), ParseError) {
-  case expect_word(toks) {
+  tokens: List(Token),
+) -> Result(#(HoleSpec, List(Token)), ParseError) {
+  case expect_word(tokens) {
     Error(e) -> Error(e)
     Ok(#(w, rest)) ->
       case int_of_string(w) {
-        Ok(n) -> Ok(#(HoleNum(n), rest))
+        Ok(n) -> Ok(#(HoleNumber(n), rest))
         Error(_) ->
           case is_keyword(w) {
             True ->
@@ -217,9 +223,9 @@ fn parse_hole_spec(
 }
 
 fn parse_proc_ref(
-  toks: List(Tok),
-) -> Result(#(ProcRef, List(Tok)), ParseError) {
-  case toks {
+  tokens: List(Token),
+) -> Result(#(ProcRef, List(Token)), ParseError) {
+  case tokens {
     [lex.Word(w), ..rest] ->
       case is_digest_word(w) {
         True ->
@@ -244,90 +250,90 @@ fn parse_proc_ref(
 // ── Grammar ───────────────────────────────────────────────────────────────────
 
 // term := "fun" binder | "lam" binder | "trusted" ... | "hole" ... | arrow
-fn parse_term(toks: List(Tok)) -> PR(Expr) {
-  case toks {
+fn parse_term(tokens: List(Token)) -> PR(Expr) {
+  case tokens {
     [lex.Word("fun"), ..rest] -> {
-      use #(#(name, dom), toks) <- chain(parse_binder_group(rest))
-      use toks <- chain(expect(toks, lex.Arrow))
-      use #(body, toks) <- chain(parse_term(toks))
-      Ok(#(EPi(name, dom, body), toks))
+      use #(#(name, domain), tokens) <- chain(parse_binder_group(rest))
+      use tokens <- chain(expect(tokens, lex.Arrow))
+      use #(body, tokens) <- chain(parse_term(tokens))
+      Ok(#(EPi(name, domain, body), tokens))
     }
     [lex.Word("lam"), ..rest] -> {
-      use #(#(name, dom), toks) <- chain(parse_binder_group(rest))
-      use toks <- chain(expect(toks, lex.FatArrow))
-      use #(body, toks) <- chain(parse_term(toks))
-      Ok(#(ELam(name, dom, body), toks))
+      use #(#(name, domain), tokens) <- chain(parse_binder_group(rest))
+      use tokens <- chain(expect(tokens, lex.FatArrow))
+      use #(body, tokens) <- chain(parse_term(tokens))
+      Ok(#(ELam(name, domain, body), tokens))
     }
     [lex.Word("trusted"), ..rest] -> {
-      use #(host_word, toks) <- chain(expect_word(rest))
+      use #(host_word, tokens) <- chain(expect_word(rest))
       use host <- chain(parse_pubkey_word(host_word))
-      use #(proc, toks) <- chain(parse_proc_ref(toks))
-      use #(args, toks) <- chain(parse_atom(toks))
-      use toks <- chain(expect(toks, lex.Colon))
-      use #(result_ty, toks) <- chain(parse_term(toks))
+      use #(proc, tokens) <- chain(parse_proc_ref(tokens))
+      use #(args, tokens) <- chain(parse_atom(tokens))
+      use tokens <- chain(expect(tokens, lex.Colon))
+      use #(result_typ, tokens) <- chain(parse_term(tokens))
       Ok(#(
-        ETrusted(host: host, proc: proc, args: args, result_ty: result_ty),
-        toks,
+        ETrusted(host: host, proc: proc, args: args, result_typ: result_typ),
+        tokens,
       ))
     }
     [lex.Word("hole"), ..rest] -> {
-      use #(spec, toks) <- chain(parse_hole_spec(rest))
-      use toks <- chain(expect(toks, lex.Colon))
-      use #(goal, toks) <- chain(parse_term(toks))
-      Ok(#(EHole(spec, goal), toks))
+      use #(spec, tokens) <- chain(parse_hole_spec(rest))
+      use tokens <- chain(expect(tokens, lex.Colon))
+      use #(goal, tokens) <- chain(parse_term(tokens))
+      Ok(#(EHole(spec, goal), tokens))
     }
-    _ -> parse_arrow(toks)
+    _ -> parse_arrow(tokens)
   }
 }
 
 // arrow := eqapp ("->" term)?
-fn parse_arrow(toks: List(Tok)) -> PR(Expr) {
-  use #(lhs, toks) <- chain(parse_eqapp(toks))
-  case toks {
+fn parse_arrow(tokens: List(Token)) -> PR(Expr) {
+  use #(lhs, tokens) <- chain(parse_eqapp(tokens))
+  case tokens {
     [lex.Arrow, ..rest] -> {
-      use #(rhs, toks) <- chain(parse_term(rest))
-      Ok(#(EArrow(lhs, rhs), toks))
+      use #(rhs, tokens) <- chain(parse_term(rest))
+      Ok(#(EArrow(lhs, rhs), tokens))
     }
-    _ -> Ok(#(lhs, toks))
+    _ -> Ok(#(lhs, tokens))
   }
 }
 
 // eqapp := "Eq" atom atom atom | "refl" atom atom | app
-fn parse_eqapp(toks: List(Tok)) -> PR(Expr) {
-  case toks {
+fn parse_eqapp(tokens: List(Token)) -> PR(Expr) {
+  case tokens {
     [lex.Word("Eq"), ..rest] -> {
-      use #(ty, toks) <- chain(parse_atom(rest))
-      use #(a, toks) <- chain(parse_atom(toks))
-      use #(b, toks) <- chain(parse_atom(toks))
-      Ok(#(EEq(ty, a, b), toks))
+      use #(typ, tokens) <- chain(parse_atom(rest))
+      use #(a, tokens) <- chain(parse_atom(tokens))
+      use #(b, tokens) <- chain(parse_atom(tokens))
+      Ok(#(EEq(typ, a, b), tokens))
     }
     [lex.Word("refl"), ..rest] -> {
-      use #(ty, toks) <- chain(parse_atom(rest))
-      use #(a, toks) <- chain(parse_atom(toks))
-      Ok(#(ERefl(ty, a), toks))
+      use #(typ, tokens) <- chain(parse_atom(rest))
+      use #(a, tokens) <- chain(parse_atom(tokens))
+      Ok(#(ERefl(typ, a), tokens))
     }
-    _ -> parse_app(toks)
+    _ -> parse_app(tokens)
   }
 }
 
 // app := atom atom*
-fn parse_app(toks: List(Tok)) -> PR(Expr) {
-  use #(head, toks) <- chain(parse_atom(toks))
-  parse_app_loop(head, toks)
+fn parse_app(tokens: List(Token)) -> PR(Expr) {
+  use #(head, tokens) <- chain(parse_atom(tokens))
+  parse_app_loop(head, tokens)
 }
 
-fn parse_app_loop(f: Expr, toks: List(Tok)) -> PR(Expr) {
-  case starts_atom(toks) {
-    False -> Ok(#(f, toks))
+fn parse_app_loop(f: Expr, tokens: List(Token)) -> PR(Expr) {
+  case starts_atom(tokens) {
+    False -> Ok(#(f, tokens))
     True -> {
-      use #(arg, toks) <- chain(parse_atom(toks))
-      parse_app_loop(EApp(f, arg), toks)
+      use #(arg, tokens) <- chain(parse_atom(tokens))
+      parse_app_loop(EApp(f, arg), tokens)
     }
   }
 }
 
-fn starts_atom(toks: List(Tok)) -> Bool {
-  case toks {
+fn starts_atom(tokens: List(Token)) -> Bool {
+  case tokens {
     [lex.LParen, ..]
     | [lex.Word("Type"), ..]
     | [lex.Word("var"), ..]
@@ -337,26 +343,26 @@ fn starts_atom(toks: List(Tok)) -> Bool {
   }
 }
 
-// atom := "(" term ")" | "Type" num | "var" num | "ref" addr | name
-fn parse_atom(toks: List(Tok)) -> PR(Expr) {
-  case toks {
+// atom := "(" term ")" | "Type" number | "var" number | "ref" address | name
+fn parse_atom(tokens: List(Token)) -> PR(Expr) {
+  case tokens {
     [lex.LParen, ..rest] -> {
-      use #(e, toks) <- chain(parse_term(rest))
-      use toks <- chain(expect(toks, lex.RParen))
-      Ok(#(e, toks))
+      use #(e, tokens) <- chain(parse_term(rest))
+      use tokens <- chain(expect(tokens, lex.RParen))
+      Ok(#(e, tokens))
     }
     [lex.Word("Type"), ..rest] -> {
-      use #(n, toks) <- chain(parse_num(rest))
-      Ok(#(ESort(n), toks))
+      use #(n, tokens) <- chain(parse_number(rest))
+      Ok(#(ESort(n), tokens))
     }
     [lex.Word("var"), ..rest] -> {
-      use #(n, toks) <- chain(parse_num(rest))
-      Ok(#(EVarIx(n), toks))
+      use #(n, tokens) <- chain(parse_number(rest))
+      Ok(#(EVarIx(n), tokens))
     }
     [lex.Word("ref"), ..rest] -> {
-      use #(w, toks) <- chain(expect_word(rest))
+      use #(w, tokens) <- chain(expect_word(rest))
       use d <- chain(parse_digest_word(w))
-      Ok(#(EConst(d), toks))
+      Ok(#(EConst(d), tokens))
     }
     [lex.Word(w), ..rest] ->
       case is_keyword(w) {
@@ -369,29 +375,29 @@ fn parse_atom(toks: List(Tok)) -> PR(Expr) {
   }
 }
 
-fn parse_item(toks: List(Tok)) -> PR(Item) {
-  case toks {
+fn parse_item(tokens: List(Token)) -> PR(Item) {
+  case tokens {
     [lex.Word("define"), ..rest] -> {
-      use #(name, toks) <- chain(expect_name(rest))
-      use toks <- chain(expect(toks, lex.Colon))
-      use #(ty, toks) <- chain(parse_term(toks))
-      use toks <- chain(expect(toks, lex.ColonEq))
-      use #(body, toks) <- chain(parse_term(toks))
-      Ok(#(Define(name, ty, body), toks))
+      use #(name, tokens) <- chain(expect_name(rest))
+      use tokens <- chain(expect(tokens, lex.Colon))
+      use #(typ, tokens) <- chain(parse_term(tokens))
+      use tokens <- chain(expect(tokens, lex.ColonEq))
+      use #(body, tokens) <- chain(parse_term(tokens))
+      Ok(#(Define(name, typ, body), tokens))
     }
     [lex.Word("runtime"), ..rest] -> {
-      use #(name, toks) <- chain(expect_name(rest))
-      use toks <- chain(expect(toks, lex.Colon))
-      use #(ty, toks) <- chain(parse_term(toks))
-      use toks <- chain(expect(toks, lex.ColonEq))
-      use #(body, toks) <- chain(parse_term(toks))
-      Ok(#(Runtime(name, ty, body), toks))
+      use #(name, tokens) <- chain(expect_name(rest))
+      use tokens <- chain(expect(tokens, lex.Colon))
+      use #(typ, tokens) <- chain(parse_term(tokens))
+      use tokens <- chain(expect(tokens, lex.ColonEq))
+      use #(body, tokens) <- chain(parse_term(tokens))
+      Ok(#(Runtime(name, typ, body), tokens))
     }
     [lex.Word("hole"), ..rest] -> {
-      use #(name, toks) <- chain(expect_name(rest))
-      use toks <- chain(expect(toks, lex.Colon))
-      use #(ty, toks) <- chain(parse_term(toks))
-      Ok(#(HoleItem(name, ty), toks))
+      use #(name, tokens) <- chain(expect_name(rest))
+      use tokens <- chain(expect(tokens, lex.Colon))
+      use #(typ, tokens) <- chain(parse_term(tokens))
+      Ok(#(HoleItem(name, typ), tokens))
     }
     other ->
       Error(ParseError(
@@ -402,14 +408,14 @@ fn parse_item(toks: List(Tok)) -> PR(Item) {
 }
 
 fn parse_module_loop(
-  toks: List(Tok),
+  tokens: List(Token),
   acc: List(Item),
 ) -> Result(List(Item), ParseError) {
-  case toks {
+  case tokens {
     [] -> Ok(list.reverse(acc))
     _ -> {
-      use #(item, toks) <- chain(parse_item(toks))
-      parse_module_loop(toks, [item, ..acc])
+      use #(item, tokens) <- chain(parse_item(tokens))
+      parse_module_loop(tokens, [item, ..acc])
     }
   }
 }
@@ -420,9 +426,11 @@ fn parse_module_loop(
 pub fn parse_expr(src: String) -> Result(Expr, ParseError) {
   case lex.lex(src) {
     Error(e) ->
-      Error(ParseError("lex error at " <> int_to_string(e.pos) <> ": " <> e.msg))
-    Ok(toks) ->
-      case parse_term(toks) {
+      Error(ParseError(
+        "lex error at " <> int_to_string(e.position) <> ": " <> e.msg,
+      ))
+    Ok(tokens) ->
+      case parse_term(tokens) {
         Error(e) -> Error(e)
         Ok(#(e, [])) -> Ok(e)
         Ok(#(_, rest)) ->
@@ -437,14 +445,16 @@ pub fn parse_expr(src: String) -> Result(Expr, ParseError) {
 pub fn parse_module(src: String) -> Result(List(Item), ParseError) {
   case lex.lex(src) {
     Error(e) ->
-      Error(ParseError("lex error at " <> int_to_string(e.pos) <> ": " <> e.msg))
-    Ok(toks) -> parse_module_loop(toks, [])
+      Error(ParseError(
+        "lex error at " <> int_to_string(e.position) <> ": " <> e.msg,
+      ))
+    Ok(tokens) -> parse_module_loop(tokens, [])
   }
 }
 
 // ── Utilities ─────────────────────────────────────────────────────────────────
 
-fn tok_to_string(tok: Tok) -> String {
+fn tok_to_string(tok: Token) -> String {
   case tok {
     lex.LParen -> "("
     lex.RParen -> ")"
@@ -456,15 +466,15 @@ fn tok_to_string(tok: Tok) -> String {
   }
 }
 
-fn first_tok_string(toks: List(Tok)) -> String {
-  case toks {
+fn first_tok_string(tokens: List(Token)) -> String {
+  case tokens {
     [] -> "end-of-input"
     [t, ..] -> tok_to_string(t)
   }
 }
 
-fn toks_to_string(toks: List(Tok)) -> String {
-  toks |> list.map(tok_to_string) |> string.join(" ")
+fn toks_to_string(tokens: List(Token)) -> String {
+  tokens |> list.map(tok_to_string) |> string.join(" ")
 }
 
 fn int_to_string(n: Int) -> String {

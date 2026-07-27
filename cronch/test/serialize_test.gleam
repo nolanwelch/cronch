@@ -1,8 +1,8 @@
 import cronch/digest
 import cronch/pubkey
 import cronch/serialize.{
-  NonCanonicalVarint, Truncated, UnknownHashAlgorithm, UnknownKeyScheme,
-  UnknownTag, VarintOverflow, TrailingBytes,
+  NonCanonicalVarint, TrailingBytes, Truncated, UnknownHashAlgorithm,
+  UnknownKeyScheme, UnknownTag, VarintOverflow,
 }
 import cronch/term
 import gleam/bit_array
@@ -31,7 +31,7 @@ pub fn var_128_test() {
 
 pub fn var_16384_test() {
   // 16384 = 0x4000, three LEB128 bytes: 0x80 0x80 0x01
-  serialize.encode(term.Var(16384))
+  serialize.encode(term.Var(16_384))
   |> should.equal(<<0x00, 0x80, 0x80, 0x01>>)
 }
 
@@ -63,7 +63,19 @@ pub fn lam_poly_id_test() {
 pub fn app_id_at_type3_test() {
   let id = term.Lam(term.Sort(0), term.Lam(term.Var(0), term.Var(0)))
   serialize.encode(term.App(id, term.Sort(3)))
-  |> should.equal(<<0x04, 0x03, 0x01, 0x00, 0x03, 0x00, 0x00, 0x00, 0x00, 0x01, 0x03>>)
+  |> should.equal(<<
+    0x04,
+    0x03,
+    0x01,
+    0x00,
+    0x03,
+    0x00,
+    0x00,
+    0x00,
+    0x00,
+    0x01,
+    0x03,
+  >>)
 }
 
 // Eq(Var(1), Var(0), Var(0))
@@ -92,36 +104,35 @@ pub fn hole_99_pi_test() {
 
 // ── Encoding: Const ───────────────────────────────────────────────────────────
 // Const wire layout: tag 0x07 | algo_tag(1 byte) | digest_bytes
-// Blake3 algo tag = 0x00, digest = 32 bytes.
+// Blake3 algorithm tag = 0x00, digest = 32 bytes.
 
 pub fn const_zero_blake3_test() {
   let zero32 = <<
-    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0,
   >>
   let t = term.Const(digest.Digest(digest.Blake3, zero32))
-  // 0x07 tag, then 0x00 Blake3 algo tag, then 32 zero bytes
+  // 0x07 tag, then 0x00 Blake3 algorithm tag, then 32 zero bytes
   let expected = <<
-    0x07, 0x00,
-    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0x07, 0x00, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
   >>
   serialize.encode(t) |> should.equal(expected)
 }
 
 // ── Encoding: Trusted ─────────────────────────────────────────────────────────
 // Trusted wire layout:
-//   tag 0x09 | scheme_tag(1) | key_bytes | algo_tag(1) | digest_bytes | args | result_ty
-// Ed25519 scheme tag = 0x00, key = 32 bytes. Blake3 algo tag = 0x00, digest = 32 bytes.
+//   tag 0x09 | scheme_tag(1) | key_bytes | algo_tag(1) | digest_bytes | args | result_typ
+// Ed25519 scheme tag = 0x00, key = 32 bytes. Blake3 algorithm tag = 0x00, digest = 32 bytes.
 
 pub fn trusted_encodes_test() {
   let host_bytes = <<
-    1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
-    1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+    1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+    1, 1, 1, 1, 1, 1,
   >>
   let proc_bytes = <<
-    2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2,
-    2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2,
+    2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2,
+    2, 2, 2, 2, 2, 2,
   >>
   let host = pubkey.PublicKey(pubkey.Ed25519, host_bytes)
   let proc = digest.Digest(digest.Blake3, proc_bytes)
@@ -129,14 +140,9 @@ pub fn trusted_encodes_test() {
 
   // 0x09 | 0x00 (Ed25519) | host_bytes | 0x00 (Blake3) | proc_bytes | Var(0) | Var(0)
   let expected = <<
-    0x09, 0x00,
-    1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
-    1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
-    0x00,
-    2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2,
-    2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2,
-    0x00, 0x00,
-    0x00, 0x00,
+    0x09, 0x00, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+    1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0x00, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2,
+    2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 0x00, 0x00, 0x00, 0x00,
   >>
   serialize.encode(t) |> should.equal(expected)
 }
@@ -159,29 +165,29 @@ pub fn round_trip_pi_test() {
 }
 
 pub fn round_trip_const_test() {
-  let h = digest.Digest(digest.Blake3, <<
-    0xab, 0xab, 0xab, 0xab, 0xab, 0xab, 0xab, 0xab,
-    0xab, 0xab, 0xab, 0xab, 0xab, 0xab, 0xab, 0xab,
-    0xab, 0xab, 0xab, 0xab, 0xab, 0xab, 0xab, 0xab,
-    0xab, 0xab, 0xab, 0xab, 0xab, 0xab, 0xab, 0xab,
-  >>)
+  let h =
+    digest.Digest(digest.Blake3, <<
+      0xab, 0xab, 0xab, 0xab, 0xab, 0xab, 0xab, 0xab, 0xab, 0xab, 0xab, 0xab,
+      0xab, 0xab, 0xab, 0xab, 0xab, 0xab, 0xab, 0xab, 0xab, 0xab, 0xab, 0xab,
+      0xab, 0xab, 0xab, 0xab, 0xab, 0xab, 0xab, 0xab,
+    >>)
   let t = term.Const(h)
   serialize.decode(serialize.encode(t)) |> should.equal(Ok(t))
 }
 
 pub fn round_trip_trusted_test() {
-  let host = pubkey.PublicKey(pubkey.Ed25519, <<
-    0xfe, 0xfe, 0xfe, 0xfe, 0xfe, 0xfe, 0xfe, 0xfe,
-    0xfe, 0xfe, 0xfe, 0xfe, 0xfe, 0xfe, 0xfe, 0xfe,
-    0xfe, 0xfe, 0xfe, 0xfe, 0xfe, 0xfe, 0xfe, 0xfe,
-    0xfe, 0xfe, 0xfe, 0xfe, 0xfe, 0xfe, 0xfe, 0xfe,
-  >>)
-  let proc = digest.Digest(digest.Blake3, <<
-    0xef, 0xef, 0xef, 0xef, 0xef, 0xef, 0xef, 0xef,
-    0xef, 0xef, 0xef, 0xef, 0xef, 0xef, 0xef, 0xef,
-    0xef, 0xef, 0xef, 0xef, 0xef, 0xef, 0xef, 0xef,
-    0xef, 0xef, 0xef, 0xef, 0xef, 0xef, 0xef, 0xef,
-  >>)
+  let host =
+    pubkey.PublicKey(pubkey.Ed25519, <<
+      0xfe, 0xfe, 0xfe, 0xfe, 0xfe, 0xfe, 0xfe, 0xfe, 0xfe, 0xfe, 0xfe, 0xfe,
+      0xfe, 0xfe, 0xfe, 0xfe, 0xfe, 0xfe, 0xfe, 0xfe, 0xfe, 0xfe, 0xfe, 0xfe,
+      0xfe, 0xfe, 0xfe, 0xfe, 0xfe, 0xfe, 0xfe, 0xfe,
+    >>)
+  let proc =
+    digest.Digest(digest.Blake3, <<
+      0xef, 0xef, 0xef, 0xef, 0xef, 0xef, 0xef, 0xef, 0xef, 0xef, 0xef, 0xef,
+      0xef, 0xef, 0xef, 0xef, 0xef, 0xef, 0xef, 0xef, 0xef, 0xef, 0xef, 0xef,
+      0xef, 0xef, 0xef, 0xef, 0xef, 0xef, 0xef, 0xef,
+    >>)
   let t =
     term.Trusted(host, proc, term.App(term.Var(0), term.Sort(0)), term.Sort(0))
   serialize.decode(serialize.encode(t)) |> should.equal(Ok(t))
@@ -222,13 +228,13 @@ pub fn rejects_truncated_pi_test() {
 }
 
 pub fn rejects_truncated_const_test() {
-  // Const tag + Blake3 algo tag + only 2 bytes instead of 32
+  // Const tag + Blake3 algorithm tag + only 2 bytes instead of 32
   serialize.decode(<<0x07, 0x00, 0x00, 0x01>>)
   |> should.equal(Error(Truncated))
 }
 
 pub fn rejects_unknown_hash_algorithm_test() {
-  // Const tag + unknown algo byte 0xff
+  // Const tag + unknown algorithm byte 0xff
   serialize.decode(<<0x07, 0xff>>)
   |> should.equal(Error(UnknownHashAlgorithm(0xff)))
 }

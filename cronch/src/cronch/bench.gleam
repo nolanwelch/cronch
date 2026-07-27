@@ -38,9 +38,9 @@ fn bench(name: String, n: Int, f: fn() -> a) -> Nil {
   io.println(
     left_pad(name, 44)
     <> "  "
-    <> left_pad(int_str(ns_per), 8)
+    <> left_pad(int_to_string(ns_per), 8)
     <> " ns/iter  (n="
-    <> int_str(n)
+    <> int_to_string(n)
     <> ")",
   )
 }
@@ -135,7 +135,7 @@ pub fn main() -> Nil {
       io.println("ERROR: failed to elaborate FOL source")
       elab.ElabModule(
         store: fn(_) { option.None },
-        env: gleam_dict_new(),
+        environment: gleam_dict_new(),
         entries: [],
       )
     }
@@ -166,24 +166,28 @@ pub fn main() -> Nil {
 
   // ── 4. Kernel ──────────────────────────────────────────────────────────────
   let store = no_store()
-  let env = kernel.env_from_store(store)
+  let environment = kernel.environment_from_store(store)
   let fuel = kernel.test_fuel
   let cx = kernel.empty()
 
   section("kernel")
   bench("kernel.whnf/beta_redex", 200_000, fn() {
-    kernel.whnf(env, fuel, beta_redex)
+    kernel.whnf(environment, fuel, beta_redex)
   })
-  bench("kernel.whnf/id_lam", 200_000, fn() { kernel.whnf(env, fuel, id_lam) })
+  bench("kernel.whnf/id_lam", 200_000, fn() {
+    kernel.whnf(environment, fuel, id_lam)
+  })
   bench("kernel.def_eq/id_lam=id_lam", 200_000, fn() {
-    kernel.def_eq(env, fuel, id_lam, id_lam)
+    kernel.def_eq(environment, fuel, id_lam, id_lam)
   })
-  bench("kernel.infer/sort0", 200_000, fn() { kernel.infer(env, fuel, cx, sort0) })
+  bench("kernel.infer/sort0", 200_000, fn() {
+    kernel.infer(environment, fuel, cx, sort0)
+  })
   bench("kernel.infer/id_lam", 100_000, fn() {
-    kernel.infer(env, fuel, cx, id_lam)
+    kernel.infer(environment, fuel, cx, id_lam)
   })
   bench("kernel.check/id_lam:id_type", 100_000, fn() {
-    kernel.check(env, fuel, cx, id_lam, id_type)
+    kernel.check(environment, fuel, cx, id_lam, id_type)
   })
 
   // ── 5. Syntax ──────────────────────────────────────────────────────────────
@@ -230,25 +234,25 @@ fn left_pad(s: String, width: Int) -> String {
   }
 }
 
-fn int_str(n: Int) -> String {
+fn int_to_string(n: Int) -> String {
   case n < 0 {
-    True -> "-" <> int_str(-n)
+    True -> "-" <> int_to_string(-n)
     False ->
       case n {
         0 -> "0"
-        _ -> do_int_str(n, "")
+        _ -> do_int_to_string(n, "")
       }
   }
 }
 
-fn do_int_str(n: Int, acc: String) -> String {
+fn do_int_to_string(n: Int, acc: String) -> String {
   case n {
     0 -> acc
-    _ -> do_int_str(n / 10, digit_char(n % 10) <> acc)
+    _ -> do_int_to_string(n / 10, int_digit(n % 10) <> acc)
   }
 }
 
-fn digit_char(d: Int) -> String {
+fn int_digit(d: Int) -> String {
   case d {
     0 -> "0"
     1 -> "1"
@@ -264,4 +268,4 @@ fn digit_char(d: Int) -> String {
 }
 
 @external(erlang, "maps", "new")
-fn gleam_dict_new() -> elab.Env
+fn gleam_dict_new() -> elab.Environment

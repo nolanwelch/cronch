@@ -27,7 +27,8 @@ fn make_store(entries: List(#(digest.Digest, term.Term))) -> oracle.Store {
 pub fn refl_oracle_closes_closed_eq_goal_test() {
   // Eq(Sort(1), Sort(0), Sort(0)) is closed by Refl(Sort(1), Sort(0))
   let problem = term.Eq(term.Sort(1), term.Sort(0), term.Sort(0))
-  let out = oracle.solve(no_store(), oracle.refl_oracle(), kernel.test_fuel, problem)
+  let out =
+    oracle.solve(no_store(), oracle.refl_oracle(), kernel.test_fuel, problem)
   oracle.is_closed(out) |> should.be_true
   out.artifact |> should.equal(term.Refl(term.Sort(1), term.Sort(0)))
   out.stuck |> should.equal([])
@@ -39,9 +40,18 @@ pub fn refl_oracle_closes_eq_under_binders_test() {
   let start =
     term.Lam(
       term.Sort(0),
-      term.Lam(term.Var(0), term.Hole(0, term.Eq(term.Var(1), term.Var(0), term.Var(0)))),
+      term.Lam(
+        term.Var(0),
+        term.Hole(0, term.Eq(term.Var(1), term.Var(0), term.Var(0))),
+      ),
     )
-  let out = oracle.solve_state(no_store(), oracle.refl_oracle(), kernel.test_fuel, start)
+  let out =
+    oracle.solve_state(
+      no_store(),
+      oracle.refl_oracle(),
+      kernel.test_fuel,
+      start,
+    )
   oracle.is_closed(out) |> should.be_true
   let expected =
     term.Lam(
@@ -142,13 +152,20 @@ pub fn solve_wraps_in_single_hole_test() {
   // solve(problem) = solve_state(Hole(0, problem))
   // If the oracle closes it, artifact has no holes.
   let problem = term.Eq(term.Sort(1), term.Sort(0), term.Sort(0))
-  let out = oracle.solve(no_store(), oracle.refl_oracle(), kernel.test_fuel, problem)
+  let out =
+    oracle.solve(no_store(), oracle.refl_oracle(), kernel.test_fuel, problem)
   oracle.is_closed(out) |> should.be_true
 }
 
 pub fn unsolvable_goal_stuck_not_corrupted_test() {
   // The refl oracle cannot inhabit Sort(0); the hole stays open.
-  let out = oracle.solve(no_store(), oracle.refl_oracle(), kernel.test_fuel, term.Sort(0))
+  let out =
+    oracle.solve(
+      no_store(),
+      oracle.refl_oracle(),
+      kernel.test_fuel,
+      term.Sort(0),
+    )
   oracle.is_closed(out) |> should.be_false
   out.stuck |> list.length |> should.equal(1)
   out.stuck
@@ -170,7 +187,13 @@ pub fn multiple_holes_filled_in_order_test() {
   // refl_oracle closes each in pre-order.
   let eq_goal = term.Eq(term.Sort(1), term.Sort(0), term.Sort(0))
   let start = term.App(term.Hole(0, eq_goal), term.Hole(1, eq_goal))
-  let out = oracle.solve_state(no_store(), oracle.refl_oracle(), kernel.test_fuel, start)
+  let out =
+    oracle.solve_state(
+      no_store(),
+      oracle.refl_oracle(),
+      kernel.test_fuel,
+      start,
+    )
   oracle.is_closed(out) |> should.be_true
   let refl = term.Refl(term.Sort(1), term.Sort(0))
   out.artifact |> should.equal(term.App(refl, refl))
@@ -179,16 +202,14 @@ pub fn multiple_holes_filled_in_order_test() {
 // ── is_closed ─────────────────────────────────────────────────────────────────
 
 pub fn is_closed_no_holes_test() {
-  let out =
-    oracle.Outcome(artifact: term.Sort(0), stuck: [])
+  let out = oracle.Outcome(artifact: term.Sort(0), stuck: [])
   oracle.is_closed(out) |> should.be_true
 }
 
 pub fn is_closed_with_hole_test() {
   let out =
-    oracle.Outcome(
-      artifact: term.Hole(0, term.Sort(0)),
-      stuck: [#(0, term.Sort(0))],
-    )
+    oracle.Outcome(artifact: term.Hole(0, term.Sort(0)), stuck: [
+      #(0, term.Sort(0)),
+    ])
   oracle.is_closed(out) |> should.be_false
 }

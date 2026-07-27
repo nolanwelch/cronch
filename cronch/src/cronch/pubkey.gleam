@@ -2,7 +2,6 @@
 ///
 /// Every scheme has a fixed key size and a 1-byte wire tag. Adding a new
 /// scheme is: add a variant here and handle it in the three functions below.
-
 pub type KeyScheme {
   Ed25519
 }

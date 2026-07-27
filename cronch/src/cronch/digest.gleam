@@ -3,7 +3,6 @@
 /// Every algorithm has a fixed-size output and a 1-byte wire tag. Adding a
 /// new algorithm is: add a variant here, handle it in the five functions below,
 /// and add it to `all_algorithms`.
-
 import gblake3
 
 pub type HashAlgorithm {
@@ -15,16 +14,16 @@ pub type Digest {
 }
 
 /// Hash `data` with the given algorithm.
-pub fn hash_bytes(algo: HashAlgorithm, data: BitArray) -> Digest {
-  let bytes = case algo {
+pub fn hash_bytes(algorithm: HashAlgorithm, data: BitArray) -> Digest {
+  let bytes = case algorithm {
     Blake3 -> gblake3.hash(data)
   }
-  Digest(algo, bytes)
+  Digest(algorithm, bytes)
 }
 
 /// The 1-byte wire tag for an algorithm. Never changes for an existing variant.
-pub fn algorithm_tag(algo: HashAlgorithm) -> Int {
-  case algo {
+pub fn algorithm_tag(algorithm: HashAlgorithm) -> Int {
+  case algorithm {
     Blake3 -> 0x00
   }
 }
@@ -38,15 +37,15 @@ pub fn decode_algorithm_tag(tag: Int) -> Result(HashAlgorithm, Nil) {
 }
 
 /// The lowercase prefix used in address strings, e.g. `"blake3"`.
-pub fn algorithm_name(algo: HashAlgorithm) -> String {
-  case algo {
+pub fn algorithm_name(algorithm: HashAlgorithm) -> String {
+  case algorithm {
     Blake3 -> "blake3"
   }
 }
 
 /// Digest output size in bytes for the given algorithm.
-pub fn digest_size(algo: HashAlgorithm) -> Int {
-  case algo {
+pub fn digest_size(algorithm: HashAlgorithm) -> Int {
+  case algorithm {
     Blake3 -> 32
   }
 }

@@ -84,13 +84,13 @@ fn walk(
   visited: List(Digest),
 ) -> #(List(TrustPair), List(Digest)) {
   case t {
-    term.Trusted(host, proc, args, result_ty) -> {
+    term.Trusted(host, proc, args, result_typ) -> {
       let pairs = [HostTrust(host, proc), ..pairs]
       // Follow proc transitively: a host hidden inside the procedure object
       // must surface in the trust set (no under-reporting).
       let #(pairs, visited) = follow(store, proc, pairs, visited)
       let #(pairs, visited) = walk(store, args, pairs, visited)
-      walk(store, result_ty, pairs, visited)
+      walk(store, result_typ, pairs, visited)
     }
     term.Const(d) -> follow(store, d, pairs, visited)
     term.Var(_) | term.Sort(_) -> #(pairs, visited)
@@ -102,13 +102,13 @@ fn walk(
       let #(pairs, visited) = walk(store, f, pairs, visited)
       walk(store, a, pairs, visited)
     }
-    term.Eq(ty, a, b) -> {
-      let #(pairs, visited) = walk(store, ty, pairs, visited)
+    term.Eq(typ, a, b) -> {
+      let #(pairs, visited) = walk(store, typ, pairs, visited)
       let #(pairs, visited) = walk(store, a, pairs, visited)
       walk(store, b, pairs, visited)
     }
-    term.Refl(ty, a) -> {
-      let #(pairs, visited) = walk(store, ty, pairs, visited)
+    term.Refl(typ, a) -> {
+      let #(pairs, visited) = walk(store, typ, pairs, visited)
       walk(store, a, pairs, visited)
     }
     term.Hole(_, goal) -> walk(store, goal, pairs, visited)
@@ -175,7 +175,7 @@ fn pair_key(p: TrustPair) -> #(Int, BitArray, BitArray) {
 // So trust_set_with_rules does not walk statically at all. It re-runs the
 // kernel's own reduction -- kernel.normalize_with_uses -- and reads off
 // exactly which RuleUses fired. This is guaranteed to match what a real
-// check/infer against this Env would exercise, because it IS that same
+// check/infer against this Environment would exercise, because it IS that same
 // reduction: kernel.gleam's tracked and untracked entry points share one
 // implementation (whnf_go/normalize_go), so there is no second, simpler
 // path that could silently drift from what the kernel actually does. A
@@ -195,20 +195,25 @@ fn pair_key(p: TrustPair) -> #(Int, BitArray, BitArray) {
 // term, not only in its type.
 
 /// Recompute a term's full trust set, including rule-set dependencies, by
-/// re-running kernel.normalize_with_uses against `env`/`fuel` and merging
-/// the RuleUses it reports with the ordinary Trusted/Const walk. `prov`
-/// must enumerate the same rules `env.rules` does, each tagged with the
+/// re-running kernel.normalize_with_uses against `environment`/`fuel` and merging
+/// the RuleUses it reports with the ordinary Trusted/Const walk. `provenance`
+/// must enumerate the same rules `environment.rules` does, each tagged with the
 /// (author, hash) of the rule set it came from -- see kernel.gleam's
 /// whnf_with_uses/normalize_with_uses for why provenance is a separate
-/// parameter rather than part of Env.
+/// parameter rather than part of Environment.
 pub fn trust_set_with_rules(
-  env: kernel.Env,
+  environment: kernel.Environment,
   fuel: kernel.Fuel,
-  prov: fn(Digest) -> List(#(kernel.RuleUse, rewrite.Rule)),
+  provenance: fn(Digest) -> List(#(kernel.RuleUse, rewrite.Rule)),
   t: Term,
 ) -> Result(List(TrustPair), kernel.TypeError) {
-  let host_pairs = trust_set(env.defs, t)
-  use #(_, uses) <- result.try(kernel.normalize_with_uses(env, prov, fuel, t))
+  let host_pairs = trust_set(environment.definitions, t)
+  use #(_, uses) <- result.try(kernel.normalize_with_uses(
+    environment,
+    provenance,
+    fuel,
+    t,
+  ))
   let rule_pairs = list.map(uses, fn(u) { RuleSetTrust(u.author, u.rule_set) })
   Ok(
     list.append(host_pairs, rule_pairs)
@@ -291,9 +296,9 @@ pub type HostResult {
 /// specific inputs producing a specific output. The hash algorithm is the
 /// same one carried in the proc Digest.
 pub fn host_message(proc: Digest, args: Term, result: Term) -> BitArray {
-  let digest.Digest(algo, proc_bytes) = proc
-  let digest.Digest(_, args_hash) = hash.hash(algo, args)
-  let digest.Digest(_, result_hash) = hash.hash(algo, result)
+  let digest.Digest(algorithm, proc_bytes) = proc
+  let digest.Digest(_, args_hash) = hash.hash(algorithm, args)
+  let digest.Digest(_, result_hash) = hash.hash(algorithm, result)
   bit_array.concat([proc_bytes, args_hash, result_hash])
 }
 

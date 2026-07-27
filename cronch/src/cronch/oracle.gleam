@@ -12,7 +12,6 @@
 /// The solve driver always wraps the store in verifying_store, so a store that
 /// mislabels a content address can only cause holes to stay stuck, never
 /// produce an incorrect proof.
-
 import cronch/digest.{type Digest}
 import cronch/hash
 import cronch/kernel
@@ -58,8 +57,8 @@ pub fn is_closed(o: Outcome) -> Bool {
 pub fn refl_oracle() -> Oracle {
   fn(g: Goal) -> Option(Proposal) {
     case g.target {
-      term.Eq(ty, lhs, rhs) if lhs == rhs ->
-        Some(Proposal(hole: g.id, term: term.Refl(ty, lhs)))
+      term.Eq(typ, lhs, rhs) if lhs == rhs ->
+        Some(Proposal(hole: g.id, term: term.Refl(typ, lhs)))
       _ -> None
     }
   }
@@ -91,8 +90,8 @@ pub fn verifying_store(inner: Store) -> Store {
     case inner(d) {
       None -> None
       Some(t) -> {
-        let digest.Digest(algo, _) = d
-        case hash.hash(algo, t) == d {
+        let digest.Digest(algorithm, _) = d
+        case hash.hash(algorithm, t) == d {
           True -> Some(t)
           False -> None
         }
@@ -110,7 +109,12 @@ pub fn verifying_store(inner: Store) -> Store {
 /// Fuel doc comment) -- the oracle is untrusted and every proposal it makes
 /// is re-verified by the kernel, so a fuel budget for that verification must
 /// be visible at this call site too, not hidden behind a default.
-pub fn solve(store: Store, oracle: Oracle, fuel: kernel.Fuel, problem: Term) -> Outcome {
+pub fn solve(
+  store: Store,
+  oracle: Oracle,
+  fuel: kernel.Fuel,
+  problem: Term,
+) -> Outcome {
   solve_state(store, oracle, fuel, term.Hole(0, problem))
 }
 
@@ -123,12 +127,12 @@ pub fn solve_state(
   start: Term,
 ) -> Outcome {
   let store = verifying_store(store)
-  let env = kernel.env_from_store(store)
-  loop(env, oracle, fuel, start, [])
+  let environment = kernel.environment_from_store(store)
+  loop(environment, oracle, fuel, start, [])
 }
 
 fn loop(
-  env: kernel.Env,
+  environment: kernel.Environment,
   oracle: Oracle,
   fuel: kernel.Fuel,
   state: Term,
@@ -138,11 +142,19 @@ fn loop(
     None -> Outcome(artifact: state, stuck: collect_stuck(state, stuck))
     Some(goal) ->
       case oracle(goal) {
-        None -> loop(env, oracle, fuel, state, [goal.id, ..stuck])
+        None -> loop(environment, oracle, fuel, state, [goal.id, ..stuck])
         Some(p) ->
-          case kernel.check(env, fuel, goal.cx, p.term, goal.target) {
-            Ok(_) -> loop(env, oracle, fuel, fill(state, goal.id, p.term), stuck)
-            Error(_) -> loop(env, oracle, fuel, state, [goal.id, ..stuck])
+          case kernel.check(environment, fuel, goal.cx, p.term, goal.target) {
+            Ok(_) ->
+              loop(
+                environment,
+                oracle,
+                fuel,
+                fill(state, goal.id, p.term),
+                stuck,
+              )
+            Error(_) ->
+              loop(environment, oracle, fuel, state, [goal.id, ..stuck])
           }
       }
   }
@@ -177,8 +189,8 @@ fn go(t: Term, cx: kernel.Context, skip: List(Int)) -> Option(Goal) {
         Some(_) as g -> g
         None -> go(a, cx, skip)
       }
-    term.Eq(ty, a, b) ->
-      case go(ty, cx, skip) {
+    term.Eq(typ, a, b) ->
+      case go(typ, cx, skip) {
         Some(_) as g -> g
         None ->
           case go(a, cx, skip) {
@@ -186,8 +198,8 @@ fn go(t: Term, cx: kernel.Context, skip: List(Int)) -> Option(Goal) {
             None -> go(b, cx, skip)
           }
       }
-    term.Refl(ty, a) ->
-      case go(ty, cx, skip) {
+    term.Refl(typ, a) ->
+      case go(typ, cx, skip) {
         Some(_) as g -> g
         None -> go(a, cx, skip)
       }
@@ -205,16 +217,18 @@ fn fill(t: Term, id: Int, replacement: Term) -> Term {
     term.Hole(hid, goal) -> term.Hole(hid, fill(goal, id, replacement))
     term.Var(_) | term.Sort(_) | term.Const(_) -> t
     term.Pi(a, b) -> term.Pi(fill(a, id, replacement), fill(b, id, replacement))
-    term.Lam(a, b) -> term.Lam(fill(a, id, replacement), fill(b, id, replacement))
-    term.App(f, a) -> term.App(fill(f, id, replacement), fill(a, id, replacement))
-    term.Eq(ty, a, b) ->
+    term.Lam(a, b) ->
+      term.Lam(fill(a, id, replacement), fill(b, id, replacement))
+    term.App(f, a) ->
+      term.App(fill(f, id, replacement), fill(a, id, replacement))
+    term.Eq(typ, a, b) ->
       term.Eq(
-        fill(ty, id, replacement),
+        fill(typ, id, replacement),
         fill(a, id, replacement),
         fill(b, id, replacement),
       )
-    term.Refl(ty, a) ->
-      term.Refl(fill(ty, id, replacement), fill(a, id, replacement))
+    term.Refl(typ, a) ->
+      term.Refl(fill(typ, id, replacement), fill(a, id, replacement))
     term.Trusted(host, proc, args, rty) ->
       term.Trusted(
         host,
@@ -231,8 +245,8 @@ fn has_holes(t: Term) -> Bool {
     term.Var(_) | term.Sort(_) | term.Const(_) -> False
     term.Pi(a, b) | term.Lam(a, b) -> has_holes(a) || has_holes(b)
     term.App(f, a) -> has_holes(f) || has_holes(a)
-    term.Eq(ty, a, b) -> has_holes(ty) || has_holes(a) || has_holes(b)
-    term.Refl(ty, a) -> has_holes(ty) || has_holes(a)
+    term.Eq(typ, a, b) -> has_holes(typ) || has_holes(a) || has_holes(b)
+    term.Refl(typ, a) -> has_holes(typ) || has_holes(a)
     term.Trusted(_, _, args, rty) -> has_holes(args) || has_holes(rty)
   }
 }
@@ -249,9 +263,12 @@ fn collect_holes(t: Term) -> List(#(Int, Term)) {
     term.Pi(a, b) | term.Lam(a, b) ->
       list.append(collect_holes(a), collect_holes(b))
     term.App(f, a) -> list.append(collect_holes(f), collect_holes(a))
-    term.Eq(ty, a, b) ->
-      list.append(collect_holes(ty), list.append(collect_holes(a), collect_holes(b)))
-    term.Refl(ty, a) -> list.append(collect_holes(ty), collect_holes(a))
+    term.Eq(typ, a, b) ->
+      list.append(
+        collect_holes(typ),
+        list.append(collect_holes(a), collect_holes(b)),
+      )
+    term.Refl(typ, a) -> list.append(collect_holes(typ), collect_holes(a))
     term.Trusted(_, _, args, rty) ->
       list.append(collect_holes(args), collect_holes(rty))
   }

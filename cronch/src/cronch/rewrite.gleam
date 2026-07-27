@@ -51,13 +51,13 @@ pub type Pattern {
   PSort(Int)
   PConst(Digest)
   PApp(Pattern, Pattern)
-  /// Matches `Refl(ty, val)`. Not part of the original Var/Sort/Const/App
+  /// Matches `Refl(typ, val)`. Not part of the original Var/Sort/Const/App
   /// grammar -- see the module-level deviation note.
-  PRefl(ty: Pattern, val: Pattern)
+  PRefl(typ: Pattern, val: Pattern)
 }
 
 /// A rewrite rule: `lhs` matches a term, `rhs` (with `Var(k)` for `k <
-/// nvars` standing for "whatever PVar(k) matched") replaces it.
+/// var_count` standing for "whatever PVar(k) matched") replaces it.
 ///
 /// Confluence and termination of a rule set are not checked here, or
 /// anywhere in this codebase -- that is out of scope by design (see the
@@ -66,7 +66,7 @@ pub type Pattern {
 /// obligation is to fail closed (via fuel) if it turns out not to
 /// terminate, never to silently loop.
 pub type Rule {
-  Rule(lhs: Pattern, rhs: Term, nvars: Int)
+  Rule(lhs: Pattern, rhs: Term, var_count: Int)
 }
 
 /// A pure lookup from a head Const digest to the rules whose lhs ultimately
@@ -83,7 +83,7 @@ pub fn empty_rules() -> RuleStore {
 
 // ── Matching ──────────────────────────────────────────────────────────────────
 
-/// Try to match `pat` against `t`, extending `slots` with any newly-bound
+/// Try to match `pattern` against `t`, extending `slots` with any newly-bound
 /// pattern variables. A repeated `PVar(k)` must match a subterm structurally
 /// equal (`==`, i.e. alpha-equivalent de Bruijn terms) to whatever `k` is
 /// already bound to -- not merely `def_eq`. Structural equality is the
@@ -92,14 +92,14 @@ pub fn empty_rules() -> RuleStore {
 /// unify are always literally the same subterm reappearing in the matched
 /// term (e.g. the two `a`s in `J(C, c, a, a, Refl(A, a))`), never merely
 /// definitionally-equal-but-distinct terms. Using `def_eq` here would also
-/// require threading an Env and Fuel through matching, which this module
+/// require threading an Environment and Fuel through matching, which this module
 /// deliberately has no dependency on (see the circular-import note below).
 pub fn match_pattern(
-  pat: Pattern,
+  pattern: Pattern,
   t: Term,
   slots: Dict(Int, Term),
 ) -> Option(Dict(Int, Term)) {
-  case pat, t {
+  case pattern, t {
     PVar(k), _ ->
       case dict.get(slots, k) {
         Ok(bound) ->
@@ -123,8 +123,8 @@ pub fn match_pattern(
       use slots2 <- option.then(match_pattern(pf, f, slots))
       match_pattern(pa, a, slots2)
     }
-    PRefl(pty, pval), term.Refl(ty, val) -> {
-      use slots2 <- option.then(match_pattern(pty, ty, slots))
+    PRefl(pty, pval), term.Refl(typ, val) -> {
+      use slots2 <- option.then(match_pattern(pty, typ, slots))
       match_pattern(pval, val, slots2)
     }
     _, _ -> None
@@ -133,7 +133,7 @@ pub fn match_pattern(
 
 // ── Instantiation ─────────────────────────────────────────────────────────────
 
-/// Replace `Var(k)` for `k < nvars` in `rhs` with the term bound to slot `k`
+/// Replace `Var(k)` for `k < var_count` in `rhs` with the term bound to slot `k`
 /// in `slots`, shifting each substituted term by the binder depth it is
 /// inserted under -- the same discipline `kernel.subst` uses for a single
 /// variable, generalized to simultaneously substituting many.
@@ -158,7 +158,7 @@ fn instantiate_at(t: Term, depth: Int, slots: Dict(Int, Term)) -> Term {
         False ->
           case dict.get(slots, k - depth) {
             Ok(s) -> shift_up(depth, s)
-            // A rule referencing a slot outside 0..nvars is malformed; rule
+            // A rule referencing a slot outside 0..var_count is malformed; rule
             // well-formedness is not validated here (out of scope -- see
             // the Rule doc comment), so this leaves the index untouched
             // rather than panicking.
@@ -167,19 +167,28 @@ fn instantiate_at(t: Term, depth: Int, slots: Dict(Int, Term)) -> Term {
       }
     term.Sort(_) | term.Const(_) -> t
     term.Pi(a, b) ->
-      term.Pi(instantiate_at(a, depth, slots), instantiate_at(b, depth + 1, slots))
+      term.Pi(
+        instantiate_at(a, depth, slots),
+        instantiate_at(b, depth + 1, slots),
+      )
     term.Lam(a, b) ->
-      term.Lam(instantiate_at(a, depth, slots), instantiate_at(b, depth + 1, slots))
+      term.Lam(
+        instantiate_at(a, depth, slots),
+        instantiate_at(b, depth + 1, slots),
+      )
     term.App(f, a) ->
       term.App(instantiate_at(f, depth, slots), instantiate_at(a, depth, slots))
-    term.Eq(ty, a, b) ->
+    term.Eq(typ, a, b) ->
       term.Eq(
-        instantiate_at(ty, depth, slots),
+        instantiate_at(typ, depth, slots),
         instantiate_at(a, depth, slots),
         instantiate_at(b, depth, slots),
       )
-    term.Refl(ty, a) ->
-      term.Refl(instantiate_at(ty, depth, slots), instantiate_at(a, depth, slots))
+    term.Refl(typ, a) ->
+      term.Refl(
+        instantiate_at(typ, depth, slots),
+        instantiate_at(a, depth, slots),
+      )
     term.Hole(id, goal) -> term.Hole(id, instantiate_at(goal, depth, slots))
     term.Trusted(host, proc, args, rty) ->
       term.Trusted(
@@ -209,12 +218,20 @@ fn shift_from(d: Int, cutoff: Int, t: Term) -> Term {
         False -> term.Var(k)
       }
     term.Sort(_) | term.Const(_) -> t
-    term.Pi(a, b) -> term.Pi(shift_from(d, cutoff, a), shift_from(d, cutoff + 1, b))
-    term.Lam(a, b) -> term.Lam(shift_from(d, cutoff, a), shift_from(d, cutoff + 1, b))
-    term.App(f, a) -> term.App(shift_from(d, cutoff, f), shift_from(d, cutoff, a))
-    term.Eq(ty, a, b) ->
-      term.Eq(shift_from(d, cutoff, ty), shift_from(d, cutoff, a), shift_from(d, cutoff, b))
-    term.Refl(ty, a) -> term.Refl(shift_from(d, cutoff, ty), shift_from(d, cutoff, a))
+    term.Pi(a, b) ->
+      term.Pi(shift_from(d, cutoff, a), shift_from(d, cutoff + 1, b))
+    term.Lam(a, b) ->
+      term.Lam(shift_from(d, cutoff, a), shift_from(d, cutoff + 1, b))
+    term.App(f, a) ->
+      term.App(shift_from(d, cutoff, f), shift_from(d, cutoff, a))
+    term.Eq(typ, a, b) ->
+      term.Eq(
+        shift_from(d, cutoff, typ),
+        shift_from(d, cutoff, a),
+        shift_from(d, cutoff, b),
+      )
+    term.Refl(typ, a) ->
+      term.Refl(shift_from(d, cutoff, typ), shift_from(d, cutoff, a))
     term.Hole(id, goal) -> term.Hole(id, shift_from(d, cutoff, goal))
     term.Trusted(host, proc, args, rty) ->
       term.Trusted(
