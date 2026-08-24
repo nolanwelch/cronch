@@ -146,6 +146,47 @@ fn encode_varint(n: Int) -> BytesTree {
   }
 }
 
+// ── Canonical primitives, exposed ─────────────────────────────────────────────
+//
+// The new hashable artifact classes (Basis, Receipt, CapabilitySet) are
+// encoded outside this module, but they must use *these* varint, digest and
+// pubkey encodings rather than parallel ones of their own. These are thin
+// wrappers over the private functions above -- no second implementation, no
+// second set of canonicality rules. Adding them changes no existing byte.
+
+/// Canonical LEB128 varint as bytes. Same encoder every term field uses.
+pub fn varint(n: Int) -> BitArray {
+  bytes_tree.to_bit_array(encode_varint(n))
+}
+
+/// Read one canonical varint off the front of `data`. Rejects overlong
+/// encodings and values above u32::MAX, exactly as term decoding does.
+pub fn take_varint(data: BitArray) -> Result(#(Int, BitArray), DecodeError) {
+  decode_varint(data)
+}
+
+/// Canonical digest field: algorithm tag byte, then the raw digest bytes.
+pub fn digest_field(d: Digest) -> BitArray {
+  bytes_tree.to_bit_array(encode_digest(d))
+}
+
+/// Read one canonical digest field off the front of `data`.
+pub fn take_digest(data: BitArray) -> Result(#(Digest, BitArray), DecodeError) {
+  decode_digest(data)
+}
+
+/// Canonical pubkey field: scheme tag byte, then the raw key bytes.
+pub fn pubkey_field(k: PublicKey) -> BitArray {
+  bytes_tree.to_bit_array(encode_pubkey(k))
+}
+
+/// Read one canonical pubkey field off the front of `data`.
+pub fn take_pubkey(
+  data: BitArray,
+) -> Result(#(PublicKey, BitArray), DecodeError) {
+  decode_pubkey(data)
+}
+
 // ── Encoding: Pattern, Rule, rule sets ─────────────────────────────────────────
 //
 // Additive only: this does not touch the Term/Digest/HostResult wire format
