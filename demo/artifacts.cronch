@@ -1,0 +1,24 @@
+-- Three artifacts, deliberately of three different trust shapes.
+--
+-- The demo revokes the host that `effectful` depends on, and shows the blast
+-- radius reaching exactly `effectful` and `downstream`, and never `purist`.
+
+-- A host procedure's declared signature. An ordinary definition; naming it
+-- here is what lets the `trusted` form below refer to it by name.
+define fetch : Type 2 := fun (x : Type 1) -> Type 0
+
+-- (1) An artifact holding a result on a host's authority. Its trust set names
+-- (host, fetch), so revoking that host reaches it.
+runtime effectful : Type 0 :=
+  trusted ed25519_a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1 fetch (Type 0) : Type 0
+
+-- (2) An artifact that depends on (1) through a name, which elaborates to a
+-- content-addressed reference. It names no host itself; it inherits the
+-- dependency, which is exactly what the transitive blast radius is for.
+runtime downstream : Type 0 -> Type 0 :=
+  lam (ignored : Type 0) => effectful
+
+-- (3) A purist artifact: no host, no axiom, no rule set. Nothing that can be
+-- revoked can reach it, and the demo shows it surviving.
+define purist : fun (P : Type 0) -> P -> P :=
+  lam (P : Type 0) => lam (p : P) => p
