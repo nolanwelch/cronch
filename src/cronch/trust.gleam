@@ -2,12 +2,18 @@
 ///
 /// Four responsibilities, all kept outside the kernel:
 ///
-///   1. Trust sets -- walk the term graph to collect every trust dependency
-///      an artifact carries, directly or transitively through Const: either
-///      a (host, proc) pair from a Trusted node, or a (rule-set author,
-///      rule-set hash) pair from a rewrite rule actually invoked while
-///      reducing the term. Pure and reproducible; a verifier recomputes it,
-///      so a registry cannot lie about it.
+///   1. Trust sets -- collect every trust dependency an artifact carries: a
+///      (host, proc) pair from a Trusted node, found by walking the term
+///      graph directly and transitively through Const, plus a (rule-set
+///      author, rule-set hash) pair for every rewrite rule the kernel
+///      actually invoked. Pure and reproducible; a verifier recomputes it, so
+///      a registry cannot lie about it.
+///
+///      Rule uses come from the typing derivation itself
+///      (`trust_set_of_check` / `trust_set_of_infer`), not from a separate
+///      reconstruction. The older reduction-scoped `trust_set_with_rules`
+///      under-reports and is kept only for callers that want the uses of a
+///      reduction rather than of a check.
 ///
 ///   2. Policy -- a set of accepted host public keys and a set of accepted
 ///      (rule-set author, rule-set hash) pairs. An artifact is authorized
@@ -182,25 +188,32 @@ fn pair_key(p: TrustPair) -> #(Int, BitArray, BitArray) {
 // verifier can always recompute this independently, exactly like the
 // existing `trust_set` walk.
 //
-// Scope limitation, consistent with `trust_set`'s existing walk: this only
-// accounts for rule sets exercised while normalizing the artifact term
-// itself (and transitively through Const, matching `follow`'s reach) -- not
-// ones that might only be exercised while checking the *types* annotating
-// some binder that never appears in the term's normal form. `walk` already
-// has this same restriction for Trusted nodes (it walks the term's own
-// structure, not its full typing derivation), so this is a consistent
-// extension of an existing scope choice, not a new gap. It is sufficient
-// for test/support/reference_rules.gleam's validation test, where the
-// rule-invoking applications (fst/snd/J) appear directly in the checked
-// term, not only in its type.
+// Scope limitation, and why it is not enough. This accounts only for rule
+// sets exercised while NORMALIZING the artifact term (and transitively
+// through Const, matching `follow`'s reach). Rewriting also happens while
+// checking TYPE annotations -- in `infer_sort` on every binder domain, in the
+// whnf of a function's type in the App case, and in every def_eq conversion
+// check. A rule set exercised only there never reaches this set, so
+// `is_authorized` can return True for an artifact whose acceptance genuinely
+// depended on an unauthorized rule set. That is a policy bypass, and
+// `trust_set_of_check` / `trust_set_of_infer` below are the fix.
+//
+// The fix is NOT a second normalization pass over the type annotations. That
+// would be the same reconstruction with a wider net: it would still miss
+// conversions performed at points nobody anticipated, and it would duplicate
+// the reduction path. Instead the kernel reports rule uses as a byproduct of
+// the derivation itself, at the point each reduction happens, and the
+// functions below just read that off.
 
-/// Recompute a term's full trust set, including rule-set dependencies, by
-/// re-running kernel.normalize_with_uses against `environment`/`fuel` and merging
-/// the RuleUses it reports with the ordinary Trusted/Const walk. `provenance`
-/// must enumerate the same rules `environment.rules` does, each tagged with the
-/// (author, hash) of the rule set it came from -- see kernel.gleam's
-/// whnf_with_uses/normalize_with_uses for why provenance is a separate
-/// parameter rather than part of Environment.
+/// The trust set of a REDUCTION: the ordinary Trusted/Const walk, plus every
+/// rule set invoked while normalizing `t`.
+///
+/// Retained for callers that genuinely want "what did reducing this term
+/// use" -- and for terms that are not well-typed at all, which the derivation
+/// functions below cannot report on because there is no derivation.
+///
+/// NOT the right input to an authorization decision. It under-reports: see the
+/// scope note above. Use `trust_set_of_check` or `trust_set_of_infer`.
 pub fn trust_set_with_rules(
   environment: kernel.Environment,
   fuel: kernel.Fuel,
@@ -220,6 +233,81 @@ pub fn trust_set_with_rules(
     |> list.unique
     |> list.sort(compare_pair),
   )
+}
+
+// ── Derivation-integral trust sets ────────────────────────────────────────────
+//
+// These are what an authorization decision consults. Each runs the kernel's
+// own typing derivation with reporting turned on and reads the rule uses off
+// the Report. Nothing is reconstructed, nothing is re-normalized, and there is
+// no second reduction path: kernel.infer/check are wrappers over the very
+// functions these call, with the Report discarded.
+//
+// A term that does not typecheck has no derivation and therefore no
+// derivation trust set -- the TypeError propagates. Fail closed: there is no
+// path here where a failed check yields an empty (and so trivially
+// authorized) set.
+
+/// Every trust dependency an artifact's ACCEPTANCE rests on, when checked
+/// against a declared type: the Trusted/Const walk, plus every rule set the
+/// typing derivation invoked anywhere -- including while checking type
+/// annotations, where the reduction-scoped set above is blind.
+pub fn trust_set_of_check(
+  environment: kernel.Environment,
+  provenance: kernel.Provenance,
+  fuel: kernel.Fuel,
+  cx: kernel.Context,
+  t: Term,
+  typ: Term,
+) -> Result(List(TrustPair), kernel.TypeError) {
+  use report <- result.try(kernel.check_reporting(
+    environment,
+    provenance,
+    fuel,
+    cx,
+    t,
+    typ,
+  ))
+  Ok(merge_pairs(environment, t, report))
+}
+
+/// As `trust_set_of_check`, for a derivation that infers the type rather than
+/// checking against a declared one.
+pub fn trust_set_of_infer(
+  environment: kernel.Environment,
+  provenance: kernel.Provenance,
+  fuel: kernel.Fuel,
+  cx: kernel.Context,
+  t: Term,
+) -> Result(#(Term, List(TrustPair)), kernel.TypeError) {
+  use #(typ, report) <- result.try(kernel.infer_reporting(
+    environment,
+    provenance,
+    fuel,
+    cx,
+    t,
+  ))
+  Ok(#(typ, merge_pairs(environment, t, report)))
+}
+
+/// The trust pairs a Report contributes, on their own. Exposed so a caller
+/// that already holds a Report (receipt.gleam does) does not have to re-run
+/// the derivation to get them.
+pub fn pairs_of_report(report: kernel.Report) -> List(TrustPair) {
+  list.map(report.rule_uses, fn(u) { RuleSetTrust(u.author, u.rule_set) })
+}
+
+/// Combine the static Trusted/Const walk with a Report's rule uses, sorted and
+/// deduplicated. The walk is still needed: a Trusted node is a trust
+/// dependency whether or not any reduction touches it.
+pub fn merge_pairs(
+  environment: kernel.Environment,
+  t: Term,
+  report: kernel.Report,
+) -> List(TrustPair) {
+  list.append(trust_set(environment.definitions, t), pairs_of_report(report))
+  |> list.unique
+  |> list.sort(compare_pair)
 }
 
 // ── Policy ────────────────────────────────────────────────────────────────────

@@ -16,8 +16,15 @@
 ///
 /// Trusted surface (public functions called from outside the kernel):
 ///   whnf, normalize, def_eq, infer, check --
-///   whnf_with_uses, normalize_with_uses (called only by trust.gleam, to
-///   recompute which rule sets a reduction actually invoked; see RuleUse).
+///   infer_reporting, check_reporting (the same derivations, returning a
+///   Report of the reductions they performed instead of discarding it;
+///   trust.gleam builds trust sets from those) --
+///   whnf_with_uses, normalize_with_uses (reduction-scoped reporting, kept
+///   for callers that want the uses of a reduction rather than of a check).
+///
+/// Reporting is observation, never decision. infer/check are wrappers over
+/// the reporting implementations with the record thrown away, so no accept or
+/// reject outcome depends on whether anybody is listening.
 ///
 /// shift, subst, beta are also public because they are useful to callers
 /// (e.g. elaboration, pretty-printing) and are pure/total regardless of Fuel.
@@ -179,6 +186,80 @@ pub type RuleUse {
   RuleUse(author: PublicKey, rule_set: Digest)
 }
 
+/// How a caller says which signed rule set each rule belongs to.
+///
+/// A `Rule` carries no author and no rule-set hash, and `Environment.rules`
+/// hands back bare rules, so nothing reachable from an Environment can
+/// attribute a firing rule to a rule set. That attribution is a trust-layer
+/// concern, so it arrives as a separate function rather than being baked into
+/// the Environment the kernel reads.
+pub type Provenance =
+  fn(Digest) -> List(#(RuleUse, Rule))
+
+// ── Report ────────────────────────────────────────────────────────────────────
+
+/// What a typing derivation did, as opposed to what it decided.
+///
+/// `rule_uses` is every rule set invoked anywhere in the derivation, in firing
+/// order and with repeats -- reducing the term, checking a binder's domain,
+/// whnf-ing a function's type, converting during a def_eq. Callers that want a
+/// set deduplicate it (trust.gleam does).
+///
+/// `fuel_used` is the number of reduction steps the derivation performed: one
+/// per beta reduction, one per delta unfolding, one per rewrite-rule
+/// application. It is NOT `Fuel` arithmetic. `Fuel` is a termination guard
+/// that is consumed only by rule application and is never threaded back out of
+/// a nested call, so "fuel remaining" does not exist to subtract from. This
+/// counter observes steps the checker takes anyway; nothing here gates,
+/// short-circuits, or is consulted by any decision.
+///
+/// Both fields are pure functions of the inputs: no clock, no process
+/// identity, no map iteration, nothing that could differ between two runs of
+/// the same check.
+pub type Report {
+  Report(rule_uses: List(RuleUse), fuel_used: Int)
+}
+
+// A derivation's accumulating record, generic over the tag carried alongside
+// each rule so that the untracked entry points can run the identical code with
+// the tag type Nil and discard the result. Private: `Report` is the public
+// shape.
+type Trace(u) {
+  Trace(uses: List(u), steps: Int)
+}
+
+fn empty_trace() -> Trace(u) {
+  Trace([], 0)
+}
+
+// One reduction step, no rule attributed to it (beta, delta).
+fn step() -> Trace(u) {
+  Trace([], 1)
+}
+
+// One reduction step attributed to a rule set.
+fn used(tag: u) -> Trace(u) {
+  Trace([tag], 1)
+}
+
+fn merge(traces: List(Trace(u))) -> Trace(u) {
+  Trace(
+    list.flat_map(traces, fn(t) { t.uses }),
+    list.fold(traces, 0, fn(acc, t) { acc + t.steps }),
+  )
+}
+
+fn report_of(trace: Trace(RuleUse)) -> Report {
+  Report(rule_uses: trace.uses, fuel_used: trace.steps)
+}
+
+// The provenance an untracked call uses: the Environment's own rules, each
+// tagged with Nil. Same rules, same order, same reduction -- only the tag
+// differs, so there is no second reduction path to drift.
+fn untracked(environment: Environment) -> fn(Digest) -> List(#(Nil, Rule)) {
+  fn(d) { list.map(environment.rules(d), fn(r) { #(Nil, r) }) }
+}
+
 // ── TypeError ─────────────────────────────────────────────────────────────────
 
 /// Why a term failed to type-check. Never a panic.
@@ -255,11 +336,13 @@ pub fn beta(arg: Term, body: Term) -> Term {
 //
 // whnf is implemented as whnf_go, generic over the "tag" carried alongside
 // each rule (type parameter `u` below). The untracked, public `whnf` tags
-// every rule with Nil and throws the tags away; `whnf_with_uses` tags every
-// rule with its owning rule set's RuleUse and returns the tags that actually
-// fired. There is exactly one reduction algorithm either way -- the public
-// `whnf` is not a separate, simpler implementation that could drift from
-// the one trust.gleam depends on for soundness-relevant accounting.
+// every rule with Nil and throws the tags away; the reporting entry points
+// tag every rule with its owning rule set's RuleUse and return the tags that
+// actually fired. There is exactly one reduction algorithm either way -- the
+// public `whnf` is not a separate, simpler implementation that could drift
+// from the one trust.gleam depends on for soundness-relevant accounting. The
+// same is true one level up: infer/check are wrappers over infer_go/check_go,
+// so a reported derivation and a plain one are the same derivation.
 //
 // Design note on Fuel and nesting: whnf_go does NOT thread an updated Fuel
 // value back out of nested calls (e.g. reducing the function position of an
@@ -273,7 +356,8 @@ pub fn beta(arg: Term, body: Term) -> Term {
 // whnf_go still always terminates or reports FuelExhausted -- it just is
 // not a perfectly tight bound on total work. Fuel exhaustion is a
 // termination guard, not a precise cost accounting mechanism (see the Fuel
-// doc comment); this trade favors simplicity.
+// doc comment); this trade favors simplicity. Trace.steps below is the
+// separate, exact count -- it observes, it never gates.
 
 /// Weak head normal form: beta/delta/rule-reduce the head until it is stuck.
 /// Never reduces under binders or inside arguments.
@@ -283,20 +367,24 @@ pub fn whnf(
   fuel: Fuel,
   t: Term,
 ) -> Result(Term, TypeError) {
-  let provenance = fn(d) { list.map(environment.rules(d), fn(r) { #(Nil, r) }) }
-  use #(term, _uses) <- result.try(whnf_go(environment, provenance, fuel, t))
+  use #(term, _trace) <- result.try(whnf_go(
+    environment,
+    untracked(environment),
+    fuel,
+    t,
+  ))
   Ok(term)
 }
 
 /// Like whnf, but also returns every RuleUse that fired while reducing t.
-/// Used only by trust.gleam to recompute rule-set trust dependencies.
 pub fn whnf_with_uses(
   environment: Environment,
-  provenance: fn(Digest) -> List(#(RuleUse, Rule)),
+  provenance: Provenance,
   fuel: Fuel,
   t: Term,
 ) -> Result(#(Term, List(RuleUse)), TypeError) {
-  whnf_go(environment, provenance, fuel, t)
+  use #(term, trace) <- result.try(whnf_go(environment, provenance, fuel, t))
+  Ok(#(term, trace.uses))
 }
 
 fn whnf_go(
@@ -304,21 +392,30 @@ fn whnf_go(
   provenance: fn(Digest) -> List(#(u, Rule)),
   fuel: Fuel,
   t: Term,
-) -> Result(#(Term, List(u)), TypeError) {
+) -> Result(#(Term, Trace(u)), TypeError) {
   case t {
     term.App(f, a) -> {
-      use #(fh, uses1) <- result.try(whnf_go(environment, provenance, fuel, f))
+      use #(fh, tr1) <- result.try(whnf_go(environment, provenance, fuel, f))
       case fh {
-        term.Lam(_, body) ->
-          whnf_go(environment, provenance, fuel, beta(a, body))
+        term.Lam(_, body) -> {
+          // A beta step. Counted, never gated: consume/Fuel is untouched
+          // here, exactly as before.
+          use #(final, tr2) <- result.try(whnf_go(
+            environment,
+            provenance,
+            fuel,
+            beta(a, body),
+          ))
+          Ok(#(final, merge([tr1, step(), tr2])))
+        }
         stuck -> {
-          use #(final, uses2) <- result.try(try_rewrite(
+          use #(final, tr2) <- result.try(try_rewrite(
             environment,
             provenance,
             fuel,
             term.App(stuck, a),
           ))
-          Ok(#(final, list.append(uses1, uses2)))
+          Ok(#(final, merge([tr1, tr2])))
         }
       }
     }
@@ -331,10 +428,19 @@ fn whnf_go(
         None ->
           case environment.definitions(d) {
             None -> try_rewrite(environment, provenance, fuel, t)
-            Some(def) -> whnf_go(environment, provenance, fuel, def)
+            Some(def) -> {
+              // A delta step. Counted, never gated.
+              use #(final, tr) <- result.try(whnf_go(
+                environment,
+                provenance,
+                fuel,
+                def,
+              ))
+              Ok(#(final, merge([step(), tr])))
+            }
           }
       }
-    other -> Ok(#(other, []))
+    other -> Ok(#(other, empty_trace()))
   }
 }
 
@@ -347,21 +453,21 @@ fn try_rewrite(
   provenance: fn(Digest) -> List(#(u, Rule)),
   fuel: Fuel,
   t: Term,
-) -> Result(#(Term, List(u)), TypeError) {
+) -> Result(#(Term, Trace(u)), TypeError) {
   case head_const(t) {
-    None -> Ok(#(t, []))
+    None -> Ok(#(t, empty_trace()))
     Some(d) ->
       case find_match(provenance(d), t) {
-        None -> Ok(#(t, []))
+        None -> Ok(#(t, empty_trace()))
         Some(#(tag, rewritten)) -> {
           use fuel2 <- result.try(consume(fuel))
-          use #(final, more) <- result.try(whnf_go(
+          use #(final, tr) <- result.try(whnf_go(
             environment,
             provenance,
             fuel2,
             rewritten,
           ))
-          Ok(#(final, [tag, ..more]))
+          Ok(#(final, merge([used(tag), tr])))
         }
       }
   }
@@ -395,10 +501,9 @@ pub fn normalize(
   fuel: Fuel,
   t: Term,
 ) -> Result(Term, TypeError) {
-  let provenance = fn(d) { list.map(environment.rules(d), fn(r) { #(Nil, r) }) }
-  use #(term, _uses) <- result.try(normalize_go(
+  use #(term, _trace) <- result.try(normalize_go(
     environment,
-    provenance,
+    untracked(environment),
     fuel,
     t,
   ))
@@ -406,14 +511,25 @@ pub fn normalize(
 }
 
 /// Like normalize, but also returns every RuleUse that fired anywhere in
-/// the term. Used only by trust.gleam.
+/// the term.
+///
+/// Reduction-scoped, and therefore NOT the right input to an authorization
+/// decision: a rule set exercised only while checking a type annotation
+/// never appears here, because no type annotation is normalized. Use
+/// `infer_reporting` / `check_reporting` for that -- see trust.gleam.
 pub fn normalize_with_uses(
   environment: Environment,
-  provenance: fn(Digest) -> List(#(RuleUse, Rule)),
+  provenance: Provenance,
   fuel: Fuel,
   t: Term,
 ) -> Result(#(Term, List(RuleUse)), TypeError) {
-  normalize_go(environment, provenance, fuel, t)
+  use #(term, trace) <- result.try(normalize_go(
+    environment,
+    provenance,
+    fuel,
+    t,
+  ))
+  Ok(#(term, trace.uses))
 }
 
 fn normalize_go(
@@ -421,120 +537,114 @@ fn normalize_go(
   provenance: fn(Digest) -> List(#(u, Rule)),
   fuel: Fuel,
   t: Term,
-) -> Result(#(Term, List(u)), TypeError) {
-  use #(h, uses1) <- result.try(whnf_go(environment, provenance, fuel, t))
+) -> Result(#(Term, Trace(u)), TypeError) {
+  use #(h, tr1) <- result.try(whnf_go(environment, provenance, fuel, t))
   case h {
-    term.Var(_) | term.Sort(_) | term.Const(_) -> Ok(#(h, uses1))
+    term.Var(_) | term.Sort(_) | term.Const(_) -> Ok(#(h, tr1))
     term.Pi(a, b) -> {
-      use #(na, uses2) <- result.try(normalize_go(
+      use #(na, tr2) <- result.try(normalize_go(
         environment,
         provenance,
         fuel,
         a,
       ))
-      use #(nb, uses3) <- result.try(normalize_go(
+      use #(nb, tr3) <- result.try(normalize_go(
         environment,
         provenance,
         fuel,
         b,
       ))
-      Ok(#(term.Pi(na, nb), list.append(uses1, list.append(uses2, uses3))))
+      Ok(#(term.Pi(na, nb), merge([tr1, tr2, tr3])))
     }
     term.Lam(a, b) -> {
-      use #(na, uses2) <- result.try(normalize_go(
+      use #(na, tr2) <- result.try(normalize_go(
         environment,
         provenance,
         fuel,
         a,
       ))
-      use #(nb, uses3) <- result.try(normalize_go(
+      use #(nb, tr3) <- result.try(normalize_go(
         environment,
         provenance,
         fuel,
         b,
       ))
-      Ok(#(term.Lam(na, nb), list.append(uses1, list.append(uses2, uses3))))
+      Ok(#(term.Lam(na, nb), merge([tr1, tr2, tr3])))
     }
     term.App(f, a) -> {
-      use #(nf, uses2) <- result.try(normalize_go(
+      use #(nf, tr2) <- result.try(normalize_go(
         environment,
         provenance,
         fuel,
         f,
       ))
-      use #(na, uses3) <- result.try(normalize_go(
+      use #(na, tr3) <- result.try(normalize_go(
         environment,
         provenance,
         fuel,
         a,
       ))
-      Ok(#(term.App(nf, na), list.append(uses1, list.append(uses2, uses3))))
+      Ok(#(term.App(nf, na), merge([tr1, tr2, tr3])))
     }
     term.Eq(typ, a, b) -> {
-      use #(nty, uses2) <- result.try(normalize_go(
+      use #(nty, tr2) <- result.try(normalize_go(
         environment,
         provenance,
         fuel,
         typ,
       ))
-      use #(na, uses3) <- result.try(normalize_go(
+      use #(na, tr3) <- result.try(normalize_go(
         environment,
         provenance,
         fuel,
         a,
       ))
-      use #(nb, uses4) <- result.try(normalize_go(
+      use #(nb, tr4) <- result.try(normalize_go(
         environment,
         provenance,
         fuel,
         b,
       ))
-      Ok(#(
-        term.Eq(nty, na, nb),
-        list.append(uses1, list.append(uses2, list.append(uses3, uses4))),
-      ))
+      Ok(#(term.Eq(nty, na, nb), merge([tr1, tr2, tr3, tr4])))
     }
     term.Refl(typ, a) -> {
-      use #(nty, uses2) <- result.try(normalize_go(
+      use #(nty, tr2) <- result.try(normalize_go(
         environment,
         provenance,
         fuel,
         typ,
       ))
-      use #(na, uses3) <- result.try(normalize_go(
+      use #(na, tr3) <- result.try(normalize_go(
         environment,
         provenance,
         fuel,
         a,
       ))
-      Ok(#(term.Refl(nty, na), list.append(uses1, list.append(uses2, uses3))))
+      Ok(#(term.Refl(nty, na), merge([tr1, tr2, tr3])))
     }
     term.Hole(id, typ) -> {
-      use #(nty, uses2) <- result.try(normalize_go(
+      use #(nty, tr2) <- result.try(normalize_go(
         environment,
         provenance,
         fuel,
         typ,
       ))
-      Ok(#(term.Hole(id, nty), list.append(uses1, uses2)))
+      Ok(#(term.Hole(id, nty), merge([tr1, tr2])))
     }
     term.Trusted(host, proc, args, rty) -> {
-      use #(nargs, uses2) <- result.try(normalize_go(
+      use #(nargs, tr2) <- result.try(normalize_go(
         environment,
         provenance,
         fuel,
         args,
       ))
-      use #(nrty, uses3) <- result.try(normalize_go(
+      use #(nrty, tr3) <- result.try(normalize_go(
         environment,
         provenance,
         fuel,
         rty,
       ))
-      Ok(#(
-        term.Trusted(host, proc, nargs, nrty),
-        list.append(uses1, list.append(uses2, uses3)),
-      ))
+      Ok(#(term.Trusted(host, proc, nargs, nrty), merge([tr1, tr2, tr3])))
     }
   }
 }
@@ -548,65 +658,108 @@ pub fn def_eq(
   a: Term,
   b: Term,
 ) -> Result(Bool, TypeError) {
-  use wa <- result.try(whnf(environment, fuel, a))
-  use wb <- result.try(whnf(environment, fuel, b))
+  use #(eq, _trace) <- result.try(def_eq_go(
+    environment,
+    untracked(environment),
+    fuel,
+    a,
+    b,
+  ))
+  Ok(eq)
+}
+
+fn def_eq_go(
+  environment: Environment,
+  provenance: fn(Digest) -> List(#(u, Rule)),
+  fuel: Fuel,
+  a: Term,
+  b: Term,
+) -> Result(#(Bool, Trace(u)), TypeError) {
+  use #(wa, tr1) <- result.try(whnf_go(environment, provenance, fuel, a))
+  use #(wb, tr2) <- result.try(whnf_go(environment, provenance, fuel, b))
+  let here = merge([tr1, tr2])
   case wa, wb {
-    term.Var(i), term.Var(j) -> Ok(i == j)
-    term.Sort(i), term.Sort(j) -> Ok(i == j)
-    term.Const(d1), term.Const(d2) -> Ok(d1 == d2)
+    term.Var(i), term.Var(j) -> Ok(#(i == j, here))
+    term.Sort(i), term.Sort(j) -> Ok(#(i == j, here))
+    term.Const(d1), term.Const(d2) -> Ok(#(d1 == d2, here))
     term.Pi(a1, b1), term.Pi(a2, b2) ->
-      and_eq(environment, fuel, a1, a2, b1, b2)
+      and_eq(environment, provenance, fuel, here, a1, a2, b1, b2)
     term.Lam(a1, b1), term.Lam(a2, b2) ->
-      and_eq(environment, fuel, a1, a2, b1, b2)
+      and_eq(environment, provenance, fuel, here, a1, a2, b1, b2)
     term.App(f1, x1), term.App(f2, x2) ->
-      and_eq(environment, fuel, f1, f2, x1, x2)
+      and_eq(environment, provenance, fuel, here, f1, f2, x1, x2)
     term.Eq(t1, a1, b1), term.Eq(t2, a2, b2) ->
-      and3_eq(environment, fuel, t1, t2, a1, a2, b1, b2)
+      and3_eq(environment, provenance, fuel, here, t1, t2, a1, a2, b1, b2)
     term.Refl(t1, a1), term.Refl(t2, a2) ->
-      and_eq(environment, fuel, t1, t2, a1, a2)
+      and_eq(environment, provenance, fuel, here, t1, t2, a1, a2)
     term.Hole(i, t1), term.Hole(j, t2) ->
       case i == j {
-        False -> Ok(False)
-        True -> def_eq(environment, fuel, t1, t2)
+        False -> Ok(#(False, here))
+        True -> {
+          use #(eq, tr) <- result.try(def_eq_go(
+            environment,
+            provenance,
+            fuel,
+            t1,
+            t2,
+          ))
+          Ok(#(eq, merge([here, tr])))
+        }
       }
     term.Trusted(h1, p1, a1, r1), term.Trusted(h2, p2, a2, r2) ->
       case h1 == h2 && p1 == p2 {
-        False -> Ok(False)
-        True -> and_eq(environment, fuel, a1, a2, r1, r2)
+        False -> Ok(#(False, here))
+        True -> and_eq(environment, provenance, fuel, here, a1, a2, r1, r2)
       }
-    _, _ -> Ok(False)
+    _, _ -> Ok(#(False, here))
   }
 }
 
 fn and_eq(
   environment: Environment,
+  provenance: fn(Digest) -> List(#(u, Rule)),
   fuel: Fuel,
+  acc: Trace(u),
   x1: Term,
   x2: Term,
   y1: Term,
   y2: Term,
-) -> Result(Bool, TypeError) {
-  use e1 <- result.try(def_eq(environment, fuel, x1, x2))
+) -> Result(#(Bool, Trace(u)), TypeError) {
+  use #(e1, tr1) <- result.try(def_eq_go(environment, provenance, fuel, x1, x2))
   case e1 {
-    True -> def_eq(environment, fuel, y1, y2)
-    False -> Ok(False)
+    // Short-circuit exactly where the untracked version always did: the
+    // second comparison is not performed, so its reductions are not counted.
+    False -> Ok(#(False, merge([acc, tr1])))
+    True -> {
+      use #(e2, tr2) <- result.try(def_eq_go(
+        environment,
+        provenance,
+        fuel,
+        y1,
+        y2,
+      ))
+      Ok(#(e2, merge([acc, tr1, tr2])))
+    }
   }
 }
 
 fn and3_eq(
   environment: Environment,
+  provenance: fn(Digest) -> List(#(u, Rule)),
   fuel: Fuel,
+  acc: Trace(u),
   x1: Term,
   x2: Term,
   y1: Term,
   y2: Term,
   z1: Term,
   z2: Term,
-) -> Result(Bool, TypeError) {
-  use e1 <- result.try(def_eq(environment, fuel, x1, x2))
+) -> Result(#(Bool, Trace(u)), TypeError) {
+  use #(e1, tr1) <- result.try(def_eq_go(environment, provenance, fuel, x1, x2))
   case e1 {
-    False -> Ok(False)
-    True -> and_eq(environment, fuel, y1, y2, z1, z2)
+    False -> Ok(#(False, merge([acc, tr1])))
+    True ->
+      and_eq(environment, provenance, fuel, merge([acc, tr1]), y1, y2, z1, z2)
   }
 }
 
@@ -620,79 +773,14 @@ pub fn infer(
   cx: Context,
   t: Term,
 ) -> Result(Term, TypeError) {
-  case t {
-    term.Var(n) ->
-      case type_of_var(cx, n) {
-        None -> Error(UnboundVar(n))
-        Some(typ) -> Ok(typ)
-      }
-
-    term.Sort(u) ->
-      case u >= max_universe {
-        True -> Error(UniverseOverflow)
-        False -> Ok(term.Sort(u + 1))
-      }
-
-    term.Pi(a, b) -> {
-      use i <- result.try(infer_sort(environment, fuel, cx, a))
-      let cx2 = push(cx, a)
-      use j <- result.try(infer_sort(environment, fuel, cx2, b))
-      Ok(term.Sort(int.max(i, j)))
-    }
-
-    term.Lam(a, b) -> {
-      use _ <- result.try(infer_sort(environment, fuel, cx, a))
-      let cx2 = push(cx, a)
-      use body_typ <- result.try(infer(environment, fuel, cx2, b))
-      Ok(term.Pi(a, body_typ))
-    }
-
-    term.App(f, x) -> {
-      use f_typ <- result.try(infer(environment, fuel, cx, f))
-      use w <- result.try(whnf(environment, fuel, f_typ))
-      case w {
-        term.Pi(domain, codomain) -> {
-          use _ <- result.try(check(environment, fuel, cx, x, domain))
-          Ok(beta(x, codomain))
-        }
-        other -> Error(NotAFunction(other))
-      }
-    }
-
-    term.Eq(typ, a, b) -> {
-      use i <- result.try(infer_sort(environment, fuel, cx, typ))
-      use _ <- result.try(check(environment, fuel, cx, a, typ))
-      use _ <- result.try(check(environment, fuel, cx, b, typ))
-      Ok(term.Sort(i))
-    }
-
-    term.Refl(typ, a) -> {
-      use _ <- result.try(infer_sort(environment, fuel, cx, typ))
-      use _ <- result.try(check(environment, fuel, cx, a, typ))
-      Ok(term.Eq(typ, a, a))
-    }
-
-    // signatures is consulted first: an axiomatic constant's declared type is
-    // returned directly, and it is never unfolded via definitions. See Environment's doc
-    // comment for the precondition this relies on (definitions/signatures disjoint).
-    term.Const(d) ->
-      case environment.signatures(d) {
-        Some(typ) -> Ok(typ)
-        None ->
-          case environment.definitions(d) {
-            None -> Error(Unresolved(d))
-            Some(def) -> infer(environment, fuel, empty(), def)
-          }
-      }
-
-    term.Hole(_, goal) -> {
-      use _ <- result.try(infer_sort(environment, fuel, cx, goal))
-      Ok(goal)
-    }
-
-    term.Trusted(_, proc, args, result_typ) ->
-      infer_trusted(environment, fuel, cx, proc, args, result_typ)
-  }
+  use #(typ, _trace) <- result.try(infer_go(
+    environment,
+    untracked(environment),
+    fuel,
+    cx,
+    t,
+  ))
+  Ok(typ)
 }
 
 /// Check that t has type expected in context cx.
@@ -705,58 +793,290 @@ pub fn check(
   t: Term,
   expected: Term,
 ) -> Result(Nil, TypeError) {
-  use actual <- result.try(infer(environment, fuel, cx, t))
-  use eq <- result.try(def_eq(environment, fuel, actual, expected))
+  use _trace <- result.try(check_go(
+    environment,
+    untracked(environment),
+    fuel,
+    cx,
+    t,
+    expected,
+  ))
+  Ok(Nil)
+}
+
+/// `infer`, plus a Report of what the derivation did.
+///
+/// Same derivation, same verdict, same errors: this is not a second typing
+/// path, it is the one path with its tags kept instead of discarded. Every
+/// reduction the checker performs anywhere -- reducing the term, checking a
+/// binder's domain, whnf-ing a function's type, converting during a
+/// def_eq -- is recorded at the point it happens.
+pub fn infer_reporting(
+  environment: Environment,
+  provenance: Provenance,
+  fuel: Fuel,
+  cx: Context,
+  t: Term,
+) -> Result(#(Term, Report), TypeError) {
+  use #(typ, trace) <- result.try(infer_go(environment, provenance, fuel, cx, t))
+  Ok(#(typ, report_of(trace)))
+}
+
+/// `check`, plus a Report of what the derivation did. See `infer_reporting`.
+pub fn check_reporting(
+  environment: Environment,
+  provenance: Provenance,
+  fuel: Fuel,
+  cx: Context,
+  t: Term,
+  expected: Term,
+) -> Result(Report, TypeError) {
+  use trace <- result.try(check_go(
+    environment,
+    provenance,
+    fuel,
+    cx,
+    t,
+    expected,
+  ))
+  Ok(report_of(trace))
+}
+
+fn infer_go(
+  environment: Environment,
+  provenance: fn(Digest) -> List(#(u, Rule)),
+  fuel: Fuel,
+  cx: Context,
+  t: Term,
+) -> Result(#(Term, Trace(u)), TypeError) {
+  case t {
+    term.Var(n) ->
+      case type_of_var(cx, n) {
+        None -> Error(UnboundVar(n))
+        Some(typ) -> Ok(#(typ, empty_trace()))
+      }
+
+    term.Sort(u) ->
+      case u >= max_universe {
+        True -> Error(UniverseOverflow)
+        False -> Ok(#(term.Sort(u + 1), empty_trace()))
+      }
+
+    term.Pi(a, b) -> {
+      use #(i, tr1) <- result.try(infer_sort_go(
+        environment,
+        provenance,
+        fuel,
+        cx,
+        a,
+      ))
+      let cx2 = push(cx, a)
+      use #(j, tr2) <- result.try(infer_sort_go(
+        environment,
+        provenance,
+        fuel,
+        cx2,
+        b,
+      ))
+      Ok(#(term.Sort(int.max(i, j)), merge([tr1, tr2])))
+    }
+
+    term.Lam(a, b) -> {
+      // The binder's domain is checked here, and any rule that fires while
+      // checking it is recorded here. This is the reduction the old
+      // reconstruct-by-normalizing trust set could not see.
+      use #(_, tr1) <- result.try(infer_sort_go(
+        environment,
+        provenance,
+        fuel,
+        cx,
+        a,
+      ))
+      let cx2 = push(cx, a)
+      use #(body_typ, tr2) <- result.try(infer_go(
+        environment,
+        provenance,
+        fuel,
+        cx2,
+        b,
+      ))
+      Ok(#(term.Pi(a, body_typ), merge([tr1, tr2])))
+    }
+
+    term.App(f, x) -> {
+      use #(f_typ, tr1) <- result.try(infer_go(
+        environment,
+        provenance,
+        fuel,
+        cx,
+        f,
+      ))
+      use #(w, tr2) <- result.try(whnf_go(environment, provenance, fuel, f_typ))
+      case w {
+        term.Pi(domain, codomain) -> {
+          use tr3 <- result.try(check_go(
+            environment,
+            provenance,
+            fuel,
+            cx,
+            x,
+            domain,
+          ))
+          Ok(#(beta(x, codomain), merge([tr1, tr2, tr3])))
+        }
+        other -> Error(NotAFunction(other))
+      }
+    }
+
+    term.Eq(typ, a, b) -> {
+      use #(i, tr1) <- result.try(infer_sort_go(
+        environment,
+        provenance,
+        fuel,
+        cx,
+        typ,
+      ))
+      use tr2 <- result.try(check_go(environment, provenance, fuel, cx, a, typ))
+      use tr3 <- result.try(check_go(environment, provenance, fuel, cx, b, typ))
+      Ok(#(term.Sort(i), merge([tr1, tr2, tr3])))
+    }
+
+    term.Refl(typ, a) -> {
+      use #(_, tr1) <- result.try(infer_sort_go(
+        environment,
+        provenance,
+        fuel,
+        cx,
+        typ,
+      ))
+      use tr2 <- result.try(check_go(environment, provenance, fuel, cx, a, typ))
+      Ok(#(term.Eq(typ, a, a), merge([tr1, tr2])))
+    }
+
+    // signatures is consulted first: an axiomatic constant's declared type is
+    // returned directly, and it is never unfolded via definitions. See Environment's doc
+    // comment for the precondition this relies on (definitions/signatures disjoint).
+    term.Const(d) ->
+      case environment.signatures(d) {
+        Some(typ) -> Ok(#(typ, empty_trace()))
+        None ->
+          case environment.definitions(d) {
+            None -> Error(Unresolved(d))
+            Some(def) -> infer_go(environment, provenance, fuel, empty(), def)
+          }
+      }
+
+    term.Hole(_, goal) -> {
+      use #(_, tr) <- result.try(infer_sort_go(
+        environment,
+        provenance,
+        fuel,
+        cx,
+        goal,
+      ))
+      Ok(#(goal, tr))
+    }
+
+    term.Trusted(_, proc, args, result_typ) ->
+      infer_trusted(environment, provenance, fuel, cx, proc, args, result_typ)
+  }
+}
+
+fn check_go(
+  environment: Environment,
+  provenance: fn(Digest) -> List(#(u, Rule)),
+  fuel: Fuel,
+  cx: Context,
+  t: Term,
+  expected: Term,
+) -> Result(Trace(u), TypeError) {
+  use #(actual, tr1) <- result.try(infer_go(
+    environment,
+    provenance,
+    fuel,
+    cx,
+    t,
+  ))
+  // The conversion check. Rules firing here are recorded here -- this is the
+  // other place the reconstructed trust set was blind to.
+  use #(eq, tr2) <- result.try(def_eq_go(
+    environment,
+    provenance,
+    fuel,
+    actual,
+    expected,
+  ))
   case eq {
-    True -> Ok(Nil)
+    True -> Ok(merge([tr1, tr2]))
     False -> Error(Mismatch(expected: expected, actual: actual))
   }
 }
 
 // ── Private helpers ───────────────────────────────────────────────────────────
 
-fn infer_sort(
+fn infer_sort_go(
   environment: Environment,
+  provenance: fn(Digest) -> List(#(u, Rule)),
   fuel: Fuel,
   cx: Context,
   t: Term,
-) -> Result(Int, TypeError) {
-  use typ <- result.try(infer(environment, fuel, cx, t))
-  use w <- result.try(whnf(environment, fuel, typ))
+) -> Result(#(Int, Trace(u)), TypeError) {
+  use #(typ, tr1) <- result.try(infer_go(environment, provenance, fuel, cx, t))
+  use #(w, tr2) <- result.try(whnf_go(environment, provenance, fuel, typ))
   case w {
-    term.Sort(u) -> Ok(u)
+    term.Sort(u) -> Ok(#(u, merge([tr1, tr2])))
     found -> Error(ExpectedSort(found))
   }
 }
 
 fn infer_trusted(
   environment: Environment,
+  provenance: fn(Digest) -> List(#(u, Rule)),
   fuel: Fuel,
   cx: Context,
   proc: Digest,
   args: Term,
   result_typ: Term,
-) -> Result(Term, TypeError) {
+) -> Result(#(Term, Trace(u)), TypeError) {
   case environment.definitions(proc) {
     None -> Error(Unresolved(proc))
     Some(sig) ->
-      case infer(environment, fuel, empty(), sig) {
+      case infer_go(environment, provenance, fuel, empty(), sig) {
         Error(_) -> Error(TrustedProcNotAType(sig))
-        Ok(_) -> {
-          use w <- result.try(whnf(environment, fuel, sig))
+        Ok(#(_, tr1)) -> {
+          use #(w, tr2) <- result.try(whnf_go(
+            environment,
+            provenance,
+            fuel,
+            sig,
+          ))
           case w {
             term.Pi(domain, codomain) -> {
-              use _ <- result.try(check(environment, fuel, cx, args, domain))
-              let expected = beta(args, codomain)
-              use _ <- result.try(infer_sort(environment, fuel, cx, result_typ))
-              use eq <- result.try(def_eq(
+              use tr3 <- result.try(check_go(
                 environment,
+                provenance,
+                fuel,
+                cx,
+                args,
+                domain,
+              ))
+              let expected = beta(args, codomain)
+              use #(_, tr4) <- result.try(infer_sort_go(
+                environment,
+                provenance,
+                fuel,
+                cx,
+                result_typ,
+              ))
+              use #(eq, tr5) <- result.try(def_eq_go(
+                environment,
+                provenance,
                 fuel,
                 result_typ,
                 expected,
               ))
               case eq {
-                True -> Ok(result_typ)
+                True -> Ok(#(result_typ, merge([tr1, tr2, tr3, tr4, tr5])))
                 False ->
                   Error(TrustedCodomainMismatch(
                     expected: expected,
