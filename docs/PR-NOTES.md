@@ -64,21 +64,23 @@ not between any of them and a Term. The cross-class collision channel the part
 exists to close would remain open against precisely the class an attacker is
 most likely to control.
 
-**Proposed change, needs your call:** keep the ordering and meaning you
-specified, but move the tag byte into a range disjoint from legacy Term
-encodings:
+**Decision (confirmed):** keep the ordering and meaning specified, but move the
+tag byte into a range disjoint from legacy Term encodings:
 
 ```
 0x80 Term (tagged)   0x81 Basis   0x82 Receipt   0x83 RuleSet   0x84 CapabilitySet
 ```
 
-Then separation is by construction against every class including legacy Terms,
-`hash.hash` is untouched, and the new `hash_tagged` is used only by code
-introduced in this PR. The alternative — your literal numbering — is
-implementable and I will do it if you prefer, but the by-construction test in
-Part B would have to be weakened to "no two *new* classes can collide", and
-that limitation belongs in the PR description rather than in a test that claims
-more than it proves.
+Separation is then by construction against every class including legacy Terms,
+`hash.hash` stays byte-identical so no stored artifact's address moves, and the
+new tagged-encoding function is used only by code introduced in this PR. The
+digest split is therefore: **`hash.hash` / `hash.hash_rule_set` produce every
+pre-existing digest** (Term content addresses, `Const` targets, the reference
+rule set's address, the vectors in `test/hash_test.gleam`), and **the new
+tagged encoding produces only Basis, Receipt, RuleSet and CapabilitySet
+digests, plus tagged Term digests where a new artifact needs one that provably
+cannot alias any other class.** Uniformity was traded away deliberately;
+stability of already-stored artifacts is the property that matters more.
 
 ### 2.2 Part C: the bug is real, but the C1 construction as written does not exhibit it
 
@@ -252,7 +254,11 @@ What unblocks it, in order of preference:
 
 1. Allow `repo.hex.pm` through the egress policy. Nothing else is needed —
    `manifest.toml` pins exact versions and checksums, so `gleam deps download`
-   verifies what it fetches.
+   verifies what it fetches. **Chosen.** Note that the egress policy is fixed
+   for the lifetime of a session: it has to be changed on the *environment*
+   (Claude Code on the web → the environment's network policy) and picked up by
+   a fresh session. Re-checked from this session after the decision;
+   `repo.hex.pm` still answers `403` to `CONNECT`.
 2. Commit a vendored `deps/` (or a Hex cache tarball) to the repo, or grant a
    Bash permission rule allowing the vendored packages to be staged into
    `build/packages/`.
