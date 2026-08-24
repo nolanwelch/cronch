@@ -184,22 +184,31 @@ fn lookup(table: List(#(Digest, a)), d: Digest) -> Option(a) {
   }
 }
 
+// Each of these builds its table ONCE and captures it in the returned
+// closure. Building it inside the closure instead would re-hash every
+// constant on every single store lookup -- the digests here are content
+// addresses, so each one is a Blake3 of a serialized term.
+
 pub fn definitions() -> kernel.Store {
-  fn(d) { lookup(definition_table(), d) }
+  let table = definition_table()
+  fn(d) { lookup(table, d) }
 }
 
 pub fn signatures() -> kernel.SignatureStore {
+  let table = signature_table()
+  let reference = reference_rules.signatures()
   fn(d) {
-    case lookup(signature_table(), d) {
+    case lookup(table, d) {
       Some(t) -> Some(t)
-      None -> reference_rules.signatures()(d)
+      None -> reference(d)
     }
   }
 }
 
 pub fn rules() -> kernel.RuleStore {
+  let table = rule_table()
   fn(d) {
-    case lookup(rule_table(), d) {
+    case lookup(table, d) {
       Some(rs) -> rs
       None -> []
     }
@@ -228,7 +237,8 @@ pub fn environment_without_rules() -> kernel.Environment {
 /// Every rule in the corpus rule set, tagged with that set's (author, hash).
 pub fn provenance() -> kernel.Provenance {
   let tag = kernel.RuleUse(author: author(), rule_set: rule_set_hash())
-  fn(d) { list.map(rules()(d), fn(r) { #(tag, r) }) }
+  let rules = rules()
+  fn(d) { list.map(rules(d), fn(r) { #(tag, r) }) }
 }
 
 /// A provenance that attributes nothing, for the no-rules environment.
