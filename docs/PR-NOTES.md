@@ -54,8 +54,8 @@ declared types), the six hardcoded vectors in `test/hash_test.gleam`, and every
 `Const` node in every stored artifact.
 
 The instruction is explicit that digest stability wins, so `hash.hash` stays
-byte-identical and the tagged encoding is a distinct function. **But that means
-the specified tag values do not achieve the stated goal.** Legacy Term
+byte-identical and Term is not re-encoded. **But that means the specified tag
+values do not achieve the stated goal.** Legacy Term
 encodings occupy leading bytes `0x00`–`0x09`. Assigning Basis `0x01`, Receipt
 `0x02`, RuleSet `0x03`, CapabilitySet `0x04` puts all four new classes inside
 that range, so "no encoding of any artifact class can equal an encoding of
@@ -64,23 +64,50 @@ not between any of them and a Term. The cross-class collision channel the part
 exists to close would remain open against precisely the class an attacker is
 most likely to control.
 
-**Decision (confirmed):** keep the ordering and meaning specified, but move the
-tag byte into a range disjoint from legacy Term encodings:
+**Decision (confirmed): continue the existing tag sequence.** `decode_by_tag`
+handles `0x00`–`0x09` and returns `UnknownTag` for everything above, so the next
+four values are free in the namespace that already exists:
 
 ```
-0x80 Term (tagged)   0x81 Basis   0x82 Receipt   0x83 RuleSet   0x84 CapabilitySet
+0x0A Basis   0x0B Receipt   0x0C RuleSet   0x0D CapabilitySet
 ```
 
-Separation is then by construction against every class including legacy Terms,
-`hash.hash` stays byte-identical so no stored artifact's address moves, and the
-new tagged-encoding function is used only by code introduced in this PR. The
-digest split is therefore: **`hash.hash` / `hash.hash_rule_set` produce every
-pre-existing digest** (Term content addresses, `Const` targets, the reference
-rule set's address, the vectors in `test/hash_test.gleam`), and **the new
-tagged encoding produces only Basis, Receipt, RuleSet and CapabilitySet
-digests, plus tagged Term digests where a new artifact needs one that provably
-cannot alias any other class.** Uniformity was traded away deliberately;
-stability of already-stored artifacts is the property that matters more.
+This gets the same by-construction separation as a disjoint high range would —
+nothing beginning `0x0A` can be a Term encoding — while satisfying constraint 5
+(follow the existing serializer's conventions, do not invent parallel ones).
+
+**Term needs no tag of its own.** The legacy Term encoding is already
+self-tagging within this namespace: its first byte is always `0x00`–`0x09`. So
+there is no "tagged Term" encoder, no second term-hash function, and
+`hash.hash` stays byte-identical for free rather than by a deliberate split.
+That matters more than in-repo convenience: the six vectors in
+`test/hash_test.gleam` are annotated as coming from
+`conformance/vectors/serialization.json` in a reference implementation, so Term
+addresses are a cross-implementation interop surface, not just our own tests.
+
+**Cost, and the guard for it.** The two namespaces now share one allocation
+space: an eleventh `Term` constructor would want `0x0A` and would silently
+alias Basis. Mitigation, both cheap: reserve `0x0A`–`0x0D` in
+`serialize.gleam`'s wire-layout comment, and add a test asserting `decode`
+rejects each of them as `UnknownTag`. A future collision then shows up as a
+failing test rather than as a forgery channel.
+
+**RuleSet (`0x0C`) does move an existing digest — decided: tag it.**
+`encode_rule_set` currently has no tag byte at all; it opens with a varint
+count, so a three-rule set begins `0x03`, byte-identical to `Lam`'s tag. Rule-set
+digests are therefore *not* separated from Term digests today, which is exactly
+the channel this part exists to close. Applying `0x0C` changes
+`hash.hash_rule_set` output and so moves every rule-set content address.
+In-repo that is safe — there is no hardcoded rule-set digest anywhere; every
+use goes through `reference_rules.rule_set_hash()` and recomputes (verified by
+grep over `src` and `test`). The exposure is external only: a policy pinning
+`#(author, rule_set_hash)` would need re-pinning. No rule sets are deployed
+yet, so this is the moment to take that cost.
+
+Net digest split: **`hash.hash` produces every pre-existing Term digest,
+unchanged.** `hash.hash_rule_set` gains the `0x0C` prefix and its outputs move
+once, deliberately. Basis, Receipt and CapabilitySet are new classes with no
+stability obligation.
 
 ### 2.2 Part C: the bug is real, but the C1 construction as written does not exhibit it
 
