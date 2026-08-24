@@ -7,7 +7,7 @@
 # declare. What it does NOT prove: anything about what the artifact computes.
 # It is a reachability bound, and it is only as strong as the runtime's
 # guarantee that `trusted` is the sole effect channel -- a guarantee nothing in
-# this repository currently enforces. See docs/PR-NOTES.md.
+# this repository currently enforces. See the open risks in docs/TCB.md.
 set -eu
 
 cd "$(dirname "$0")/.."

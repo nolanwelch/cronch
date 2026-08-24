@@ -24,8 +24,8 @@
 ///     bounds nothing at all. THAT GUARANTEE IS NOT CURRENTLY ENFORCED
 ///     ANYWHERE IN THIS REPOSITORY -- there is no plugin runtime, no host
 ///     execution, and nothing that checks a running artifact against its
-///     declaration. Today this is a static property of terms. See the open
-///     risks in docs/PR-NOTES.md.
+///     declaration. Today this is a static property of terms. It is the
+///     first of the open risks in docs/TCB.md.
 ///   - A declaration that covers everything proves nothing. The property is
 ///     "no more than declared", so it is exactly as informative as the
 ///     declaration is narrow.
