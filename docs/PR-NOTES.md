@@ -264,31 +264,31 @@ error: HTTP error
   error sending request for url (https://repo.hex.pm/tarballs/b3-0.2.0.tar)
 ```
 
-`repo.hex.pm` is refused by this session's egress policy (`403` to `CONNECT`),
-as is `codeberg.org`, where `gblake3` — the transitive source of the project's
-only hash implementation — is hosted. `github.com` is reachable for git reads,
-but vendoring the dependencies out of git into `build/packages/` to work around
-Hex was declined by the sandbox as untrusted-code integration, which is the
-correct call and I did not attempt to route around it.
+`repo.hex.pm` is refused by the development environment's egress policy (`403`
+to `CONNECT`), as is `codeberg.org`, where `gblake3` — the transitive source of
+the project's only hash implementation — is hosted. `github.com` is reachable
+for git reads, but staging dependencies from git into `build/packages/` to work
+around Hex is blocked as untrusted-code integration, and was not routed around.
 
 The practical consequence: **no part of this PR can be compiled, tested, or
-`gleam format`-checked from this branch as things stand.** Parts B through K are
-all test-gated by the task's own rules, and writing ~2 000 lines of
+`gleam format`-checked in that environment as things stand.** Parts B through K
+are all test-gated by the task's own rules, and roughly 2 000 lines of
 security-relevant Gleam that has never been type-checked would be worse than
-writing none.
+none.
 
-What unblocks it, in order of preference:
+GitHub Actions is unaffected — `.github/workflows/test.yml` resolves
+dependencies normally, so CI remains a valid (if slow) build and test oracle
+for anything pushed to this branch.
 
-1. Allow `repo.hex.pm` through the egress policy. Nothing else is needed —
-   `manifest.toml` pins exact versions and checksums, so `gleam deps download`
-   verifies what it fetches. **Chosen.** Note that the egress policy is fixed
-   for the lifetime of a session: it has to be changed on the *environment*
-   (Claude Code on the web → the environment's network policy) and picked up by
-   a fresh session. Re-checked from this session after the decision;
-   `repo.hex.pm` still answers `403` to `CONNECT`.
-2. Commit a vendored `deps/` (or a Hex cache tarball) to the repo, or grant a
-   Bash permission rule allowing the vendored packages to be staged into
-   `build/packages/`.
-3. Confirm you want the code written unverified, with every part explicitly
-   marked untested in the PR description. I do not recommend this and would
-   want it in writing.
+What unblocks local development, in order of preference:
+
+1. Allow `repo.hex.pm` through the environment's network policy. Nothing else
+   is needed — `manifest.toml` pins exact versions and checksums, so
+   `gleam deps download` verifies what it fetches. **Chosen.** The policy is
+   fixed for the lifetime of a development session, so it must be changed on
+   the environment and picked up by a fresh one.
+2. Commit a vendored `deps/` (or a Hex cache tarball) to the repo, so the build
+   has no network dependency at all.
+3. Fall back to CI as the only gate: push each part and read the workflow
+   result, accepting a much slower edit-test cycle and no local
+   `gleam format --check`.
