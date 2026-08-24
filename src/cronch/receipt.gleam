@@ -36,6 +36,7 @@
 /// distinguish "refuted" from "nobody looked" -- and it costs one variant.
 import cronch/basis
 import cronch/canonical
+import cronch/capability
 import cronch/digest.{type Digest, type HashAlgorithm}
 import cronch/hash
 import cronch/kernel.{type Environment, type Provenance}
@@ -153,7 +154,12 @@ pub type Receipt {
     axioms: List(Digest),
     /// Trust dependencies the acceptance rested on, from the derivation.
     trust_set: List(TrustPair),
-    /// Capability-set digest, or empty. Populated by Part H.
+    /// The digest of the artifact's capability set: which host procedures it
+    /// can reach, transitively. A single-element list rather than a bare
+    /// Digest so that a future receipt can name several capability views
+    /// without a wire break; empty only for a set that could not be computed
+    /// at all, which never happens here because an unresolvable reference has
+    /// its own digest (see capability.gleam).
     capabilities: List(Digest),
     /// The budget the check was given.
     fuel_declared: Int,
@@ -327,7 +333,9 @@ pub fn issue_with(
     deps: direct_deps(t),
     axioms: b.axioms,
     trust_set: pairs,
-    capabilities: [],
+    capabilities: [
+      capability.digest(algorithm, capability.of_term(t, environment)),
+    ],
     fuel_declared: fuel_declared,
     fuel_used: fuel_used,
     verdict: verdict,

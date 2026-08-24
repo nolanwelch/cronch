@@ -1,5 +1,6 @@
 /// Part F: receipts.
 import cronch/canonical
+import cronch/capability
 import cronch/digest
 import cronch/kernel
 import cronch/pubkey
@@ -227,7 +228,13 @@ pub fn a_purist_receipt_has_empty_sets_test() {
   r.trust_set |> should.equal([])
   r.axioms |> should.equal([])
   r.deps |> should.equal([])
-  r.capabilities |> should.equal([])
+  // `capabilities` names the digest of the EMPTY capability set, not an empty
+  // list: "reaches nothing" is a computed fact with an identity, and must not
+  // look the same as "nobody computed it".
+  r.capabilities
+  |> should.equal([
+    capability.digest(digest.Blake3, capability.empty()),
+  ])
 }
 
 pub fn every_set_field_is_sorted_and_deduped_test() {
