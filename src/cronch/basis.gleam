@@ -104,15 +104,23 @@ pub fn decode(bytes: BitArray) -> Result(Basis, DecodeError) {
   use #(axioms, r2) <- result.try(canonical.take_digest_list(r1))
   use #(rule_sets, r3) <- result.try(canonical.take_key_digest_list(r2))
   use #(hosts, r4) <- result.try(canonical.take_pubkey_list(r3))
-  case r4 {
-    <<>> ->
-      Ok(Basis(
-        kernel_id: kernel_id,
-        axioms: axioms,
-        rule_sets: rule_sets,
-        hosts: hosts,
-      ))
+  use _ <- result.try(case r4 {
+    <<>> -> Ok(Nil)
     _ -> Error(serialize.TrailingBytes)
+  })
+  let decoded =
+    Basis(
+      kernel_id: kernel_id,
+      axioms: axioms,
+      rule_sets: rule_sets,
+      hosts: hosts,
+    )
+  // Canonical means canonical in both directions: a basis whose fields arrived
+  // out of order or with repeats would re-encode to different bytes, giving
+  // one basis two digests.
+  case canonicalize(decoded) == decoded {
+    True -> Ok(decoded)
+    False -> Error(serialize.TrailingBytes)
   }
 }
 
