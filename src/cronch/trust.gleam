@@ -26,8 +26,12 @@
 ///      test/support/reference_rules.gleam must be explicitly listed in a
 ///      policy like anything else.
 ///
-///   3. Host signature verification -- asymmetric signature over
-///      proc_bytes || hash(canonical(args)) || hash(canonical(result)).
+///   3. Host result verification -- an asymmetric signature over
+///      proc_bytes || hash(canonical(args)) || hash(canonical(result)), AND a
+///      check that the result inhabits the type the pinned procedure promises
+///      for those arguments. A signature says who computed a result, not that
+///      the result is the kind of thing that was asked for; accepting on the
+///      signature alone lets a faithful host inject an ill-typed term.
 ///
 ///   4. Rule-set signature verification -- asymmetric signature over a rule
 ///      set's own content hash, using the same crypto FFI as (3).
@@ -406,7 +410,34 @@ pub fn is_authorized(set: List(TrustPair), policy: Policy) -> Bool {
   list.is_empty(unauthorized(set, policy))
 }
 
-// ── Host signature verification ───────────────────────────────────────────────
+// ── Host result verification ──────────────────────────────────────────────────
+//
+// A host result has to clear two independent bars, and the older
+// `verify_host_result` only ever checked the first:
+//
+//   1. AUTHENTICITY. The signature is by the host key named, over exactly this
+//      (proc, args, result). Says who computed it. Says nothing about what
+//      they computed.
+//
+//   2. WELL-TYPEDNESS. The result inhabits the type the pinned procedure
+//      promises for these arguments. A host that signs `Sort(0)` where the
+//      procedure's codomain says `Nat` is authentically wrong, and a check
+//      that stops after (1) accepts it.
+//
+// Nothing here is in the kernel and nothing here teaches the kernel about
+// signatures: `verify_host_result` calls the kernel's ordinary public `check`,
+// exactly as any other client of it would.
+//
+// The declared type is DERIVED FROM THE PINNED PROCEDURE, not read off the
+// wire. `HostResult` carries no `result_typ` field, and adding one would be a
+// wire-format change AND would let the signer nominate the standard it is
+// judged against -- it could ship a result with a type it happens to inhabit.
+// Instead the expected type is computed the same way kernel.gleam's
+// `infer_trusted` computes it: whnf the procedure's signature object to a
+// `Pi(domain, codomain)`, require `args : domain`, and take
+// `beta(args, codomain)`. So this agrees with the Trusted typing rule by
+// construction, and a `Trusted` node's own `result_typ` is def_eq to what is
+// computed here whenever that node type-checks at all.
 
 /// A host-signed result traveling on the wire.
 pub type HostResult {
@@ -432,14 +463,95 @@ pub fn host_message(proc: Digest, args: Term, result: Term) -> BitArray {
   bit_array.concat([proc_bytes, args_hash, result_hash])
 }
 
-/// Verify a host result's signature. Fails closed: a malformed key,
+/// Verify a host result's SIGNATURE ONLY. Fails closed: a malformed key,
 /// malformed signature, or any verification failure returns False.
 /// The kernel never calls this; it does not know what a signature is.
-pub fn verify_host_result(r: HostResult) -> Bool {
+///
+/// Authenticity is not acceptability -- a host can faithfully sign a result of
+/// the wrong type. Call `verify_host_result` to decide whether to believe a
+/// result; this is exposed for callers that need the two bars separately
+/// (diagnostics that distinguish "not from this host" from "not of this
+/// type").
+pub fn verify_host_signature(r: HostResult) -> Bool {
   let pubkey.PublicKey(scheme, key_bytes) = r.host
   let msg = host_message(r.proc, r.args, r.result)
   case scheme {
     pubkey.Ed25519 -> ffi_verify_ed25519(msg, r.signature, key_bytes)
+  }
+}
+
+/// The type a host result is REQUIRED to inhabit, derived from the pinned
+/// procedure and the arguments rather than from anything the host asserts.
+///
+/// Mirrors kernel.gleam's `infer_trusted`: the procedure object must be a
+/// type, must whnf to a `Pi`, the arguments must check against its domain,
+/// and the answer is its codomain instantiated at those arguments. Every
+/// failure is a `TypeError`, never a default type -- there is no path here
+/// that returns a type the host was not held to.
+pub fn host_result_type(
+  environment: kernel.Environment,
+  fuel: kernel.Fuel,
+  proc: Digest,
+  args: Term,
+) -> Result(Term, kernel.TypeError) {
+  case environment.definitions(proc) {
+    // The procedure the signature pins is not in the environment, so there is
+    // no promise to hold the result to. Fail closed rather than wave it
+    // through: this is the same `Unresolved` the kernel raises for a Trusted
+    // node on an unknown proc.
+    None -> Error(kernel.Unresolved(proc))
+    Some(sig) -> {
+      use _ <- result.try(
+        kernel.infer(environment, fuel, kernel.empty(), sig)
+        |> result.replace_error(kernel.TrustedProcNotAType(sig)),
+      )
+      use head <- result.try(kernel.whnf(environment, fuel, sig))
+      case head {
+        term.Pi(domain, codomain) -> {
+          use _ <- result.try(kernel.check(
+            environment,
+            fuel,
+            kernel.empty(),
+            args,
+            domain,
+          ))
+          Ok(kernel.beta(args, codomain))
+        }
+        other -> Error(kernel.TrustedProcNotPi(other))
+      }
+    }
+  }
+}
+
+/// Verify a host result: authentic AND well-typed. Fails closed on both bars
+/// -- a bad signature, an unresolvable or non-functional procedure, arguments
+/// outside the procedure's domain, a fuel exhaustion during the check, or a
+/// result that does not inhabit the procedure's codomain all return False.
+///
+/// `fuel` is explicit because the type check is real reduction, with the same
+/// termination guard as any other kernel call, and a budget for it must be
+/// visible at the call site rather than hidden behind a default.
+///
+/// Signature verification still happens entirely here, outside the kernel;
+/// the type check is an ordinary call to the kernel's public `check`.
+pub fn verify_host_result(
+  environment: kernel.Environment,
+  fuel: kernel.Fuel,
+  r: HostResult,
+) -> Bool {
+  verify_host_signature(r) && result_has_declared_type(environment, fuel, r)
+}
+
+fn result_has_declared_type(
+  environment: kernel.Environment,
+  fuel: kernel.Fuel,
+  r: HostResult,
+) -> Bool {
+  case host_result_type(environment, fuel, r.proc, r.args) {
+    Error(_) -> False
+    Ok(typ) ->
+      kernel.check(environment, fuel, kernel.empty(), r.result, typ)
+      |> result.is_ok
   }
 }
 

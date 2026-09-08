@@ -304,9 +304,17 @@ pub fn host_message_changes_with_proc_test() {
   { msg1 == msg2 } |> should.be_false
 }
 
-// ── verify_host_result ────────────────────────────────────────────────────────
+// ── verify_host_signature: authenticity alone ─────────────────────────────────
+//
+// These four tests were written against `verify_host_result` when that
+// function checked nothing but the signature. What they actually assert is a
+// property of SIGNATURES -- valid verifies, tampered/wrong-key/garbage do not
+// -- and that property is still a requirement, so they now name the function
+// that owns it. `verify_host_result` is a strictly stronger predicate and gets
+// its own tests below; asserting authenticity through it would have meant
+// dragging an environment into a test about crypto.
 
-pub fn verify_host_result_valid_test() {
+pub fn verify_host_signature_valid_test() {
   // Generate a key, sign, verify round-trip.
   let #(pub_bytes, priv_bytes) = ffi_generate_ed25519()
   let host = pubkey.PublicKey(pubkey.Ed25519, pub_bytes)
@@ -323,10 +331,10 @@ pub fn verify_host_result_valid_test() {
       result: result,
       signature: sig,
     )
-  trust.verify_host_result(r) |> should.be_true
+  trust.verify_host_signature(r) |> should.be_true
 }
 
-pub fn verify_host_result_tampered_result_test() {
+pub fn verify_host_signature_tampered_result_test() {
   let #(pub_bytes, priv_bytes) = ffi_generate_ed25519()
   let host = pubkey.PublicKey(pubkey.Ed25519, pub_bytes)
   let proc = fake_proc(0x03)
@@ -343,10 +351,10 @@ pub fn verify_host_result_tampered_result_test() {
       result: term.Sort(6),
       signature: sig,
     )
-  trust.verify_host_result(r) |> should.be_false
+  trust.verify_host_signature(r) |> should.be_false
 }
 
-pub fn verify_host_result_wrong_key_test() {
+pub fn verify_host_signature_wrong_key_test() {
   let #(pub_bytes, priv_bytes) = ffi_generate_ed25519()
   let #(wrong_pub, _) = ffi_generate_ed25519()
   let _ = pub_bytes
@@ -364,10 +372,10 @@ pub fn verify_host_result_wrong_key_test() {
       result: result,
       signature: sig,
     )
-  trust.verify_host_result(r) |> should.be_false
+  trust.verify_host_signature(r) |> should.be_false
 }
 
-pub fn verify_host_result_bad_signature_test() {
+pub fn verify_host_signature_bad_signature_test() {
   let #(pub_bytes, _) = ffi_generate_ed25519()
   let host = pubkey.PublicKey(pubkey.Ed25519, pub_bytes)
   let proc = fake_proc(0x03)
@@ -387,7 +395,185 @@ pub fn verify_host_result_bad_signature_test() {
       result: result,
       signature: bad_sig,
     )
-  trust.verify_host_result(r) |> should.be_false
+  trust.verify_host_signature(r) |> should.be_false
+}
+
+// ── verify_host_result: authenticity AND well-typedness ───────────────────────
+//
+// A signature says who computed a result. It says nothing about WHAT they
+// computed, so a host that faithfully signs a result of the wrong type used to
+// pass verification. `verify_host_result` now also holds the result to the
+// type the pinned procedure promises for the given arguments, derived from the
+// procedure itself rather than read off the wire.
+
+/// An environment in which `proc` is the procedure object `Pi (Sort 1) . Sort 5`:
+/// given a type in Sort(1), it promises something in Sort(5). Sort(0) : Sort(1)
+/// is an acceptable argument and Sort(4) : Sort(5) an acceptable result.
+fn host_env() -> #(kernel.Environment, digest.Digest) {
+  let proc_sig = term.Pi(term.Sort(1), term.Sort(5))
+  let proc = hash.hash(digest.Blake3, proc_sig)
+  #(defs_env(make_store([#(proc, proc_sig)])), proc)
+}
+
+fn signed(
+  proc: digest.Digest,
+  args: term.Term,
+  result: term.Term,
+) -> trust.HostResult {
+  let #(pub_bytes, priv_bytes) = ffi_generate_ed25519()
+  let sig = ffi_sign_ed25519(trust.host_message(proc, args, result), priv_bytes)
+  trust.HostResult(
+    host: pubkey.PublicKey(pubkey.Ed25519, pub_bytes),
+    proc: proc,
+    args: args,
+    result: result,
+    signature: sig,
+  )
+}
+
+pub fn verify_host_result_accepts_signed_welltyped_result_test() {
+  let #(environment, proc) = host_env()
+  let r = signed(proc, term.Sort(0), term.Sort(4))
+  trust.verify_host_result(environment, kernel.test_fuel, r) |> should.be_true
+}
+
+pub fn verify_host_result_rejects_signed_illtyped_result_test() {
+  // THE REGRESSION. Sort(9) : Sort(10), not Sort(5). The host signed it
+  // faithfully -- verify_host_signature says so -- and the old
+  // signature-only verify_host_result accepted it.
+  let #(environment, proc) = host_env()
+  let r = signed(proc, term.Sort(0), term.Sort(9))
+  trust.verify_host_signature(r) |> should.be_true
+  trust.verify_host_result(environment, kernel.test_fuel, r) |> should.be_false
+}
+
+pub fn verify_host_result_rejects_args_outside_the_domain_test() {
+  // Sort(7) : Sort(8), so it is not in the procedure's domain Sort(1). The
+  // promise the procedure makes is only about arguments it accepts, so there
+  // is no type to hold the result to and nothing to believe.
+  let #(environment, proc) = host_env()
+  let r = signed(proc, term.Sort(7), term.Sort(4))
+  trust.verify_host_signature(r) |> should.be_true
+  trust.verify_host_result(environment, kernel.test_fuel, r) |> should.be_false
+}
+
+pub fn verify_host_result_rejects_unresolvable_proc_test() {
+  // Fail closed: no procedure object in the environment means no promise to
+  // check the result against, not "nothing to object to".
+  let #(environment, _proc) = host_env()
+  let r = signed(fake_proc(0x40), term.Sort(0), term.Sort(4))
+  trust.verify_host_signature(r) |> should.be_true
+  trust.verify_host_result(environment, kernel.test_fuel, r) |> should.be_false
+}
+
+pub fn verify_host_result_rejects_non_pi_proc_test() {
+  // A procedure object that is not a function type promises nothing about a
+  // result at all.
+  let proc_sig = term.Sort(3)
+  let proc = hash.hash(digest.Blake3, proc_sig)
+  let environment = defs_env(make_store([#(proc, proc_sig)]))
+  let r = signed(proc, term.Sort(0), term.Sort(4))
+  trust.verify_host_signature(r) |> should.be_true
+  trust.verify_host_result(environment, kernel.test_fuel, r) |> should.be_false
+}
+
+pub fn verify_host_result_still_fails_closed_on_a_bad_signature_test() {
+  // Well-typed is not enough either: the two bars are independent, and the
+  // type check must not paper over a signature that does not verify.
+  let #(environment, proc) = host_env()
+  let r = signed(proc, term.Sort(0), term.Sort(4))
+  let forged = trust.HostResult(..r, signature: <<0:size(512)>>)
+  trust.verify_host_signature(forged) |> should.be_false
+  trust.verify_host_result(environment, kernel.test_fuel, forged)
+  |> should.be_false
+}
+
+pub fn verify_host_result_denies_when_fuel_runs_out_test() {
+  // The type check is real reduction under the kernel's ordinary termination
+  // guard, so the fuel argument has to reach it. Here the procedure object
+  // only becomes a Pi after a rewrite rule fires: with fuel it verifies, and
+  // with a budget that cannot finish the reduction the answer is a denial,
+  // not an acceptance.
+  let g = fake_proc(0x45)
+  let proc_sig = term.App(term.Const(g), term.Sort(0))
+  let proc = hash.hash(digest.Blake3, proc_sig)
+  let rule =
+    rewrite.Rule(
+      lhs: rewrite.PApp(rewrite.PConst(g), rewrite.PVar(0)),
+      rhs: term.Pi(term.Sort(1), term.Sort(5)),
+      var_count: 1,
+    )
+  let environment =
+    kernel.Environment(
+      definitions: make_store([#(proc, proc_sig)]),
+      signatures: make_store([#(g, term.Pi(term.Sort(1), term.Sort(6)))]),
+      rules: fn(d) {
+        case d == g {
+          True -> [rule]
+          False -> []
+        }
+      },
+    )
+  let r = signed(proc, term.Sort(0), term.Sort(4))
+  trust.verify_host_result(environment, kernel.test_fuel, r) |> should.be_true
+  trust.verify_host_result(environment, kernel.Limited(0), r)
+  |> should.be_false
+}
+
+pub fn host_result_type_is_the_codomain_at_the_arguments_test() {
+  let #(environment, proc) = host_env()
+  trust.host_result_type(environment, kernel.test_fuel, proc, term.Sort(0))
+  |> should.equal(Ok(term.Sort(5)))
+
+  // Arguments outside the domain, and an unknown procedure, are errors rather
+  // than a fallback type.
+  trust.host_result_type(environment, kernel.test_fuel, proc, term.Sort(7))
+  |> should.be_error
+  let missing = fake_proc(0x41)
+  trust.host_result_type(environment, kernel.test_fuel, missing, term.Sort(0))
+  |> should.equal(Error(kernel.Unresolved(missing)))
+}
+
+pub fn verify_host_result_expected_type_depends_on_the_arguments_test() {
+  // A dependent procedure: `Pi (A : Sort 0) . A`. The type the result must
+  // inhabit is not fixed by the procedure alone -- it is the codomain
+  // instantiated at the arguments the signature covers, so a result that
+  // would be fine for one argument is rejected for another.
+  let proc_sig = term.Pi(term.Sort(0), term.Var(0))
+  let proc = hash.hash(digest.Blake3, proc_sig)
+  let nat = fake_proc(0x42)
+  let bool_ = fake_proc(0x43)
+  let zero = fake_proc(0x44)
+  let environment =
+    kernel.Environment(
+      definitions: make_store([#(proc, proc_sig)]),
+      signatures: make_store([
+        #(nat, term.Sort(0)),
+        #(bool_, term.Sort(0)),
+        // zero : nat
+        #(zero, term.Const(nat)),
+      ]),
+      rules: kernel.empty_rules(),
+    )
+
+  trust.host_result_type(environment, kernel.test_fuel, proc, term.Const(nat))
+  |> should.equal(Ok(term.Const(nat)))
+
+  // zero : nat, asked for a nat -- accepted.
+  trust.verify_host_result(
+    environment,
+    kernel.test_fuel,
+    signed(proc, term.Const(nat), term.Const(zero)),
+  )
+  |> should.be_true
+
+  // The same signed result offered as a bool -- rejected.
+  trust.verify_host_result(
+    environment,
+    kernel.test_fuel,
+    signed(proc, term.Const(bool_), term.Const(zero)),
+  )
+  |> should.be_false
 }
 
 // ── policy: mixed host and rule-set trust dependencies ─────────────────────────
