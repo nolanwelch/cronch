@@ -4,7 +4,9 @@
 ///
 ///   1. Trust sets -- collect every trust dependency an artifact carries: a
 ///      (host, proc) pair from a Trusted node, found by walking the term
-///      graph directly and transitively through Const, plus a (rule-set
+///      graph directly and transitively through Const -- through a constant's
+///      definition where it has one and through its declared type where it
+///      does not, so an axiom cannot hide a Trusted node -- plus a (rule-set
 ///      author, rule-set hash) pair for every rewrite rule the kernel
 ///      actually invoked. Pure and reproducible; a verifier recomputes it, so
 ///      a registry cannot lie about it.
@@ -60,31 +62,45 @@ pub type TrustPair {
   RuleSetTrust(author: PublicKey, hash: Digest)
 }
 
-/// The store type: a pure map from content address to term.
-pub type Store =
-  fn(Digest) -> option.Option(Term)
-
 // ── Trust sets ────────────────────────────────────────────────────────────────
 
 /// Recompute the trust set of a term: every (host, proc) in its own Trusted
-/// nodes, unioned with the trust set of every object reachable through Const.
-/// The result is sorted and deduplicated. Terminates because the object graph
-/// is a DAG; the visited set is a belt-and-suspenders guard.
+/// nodes, unioned with the trust set of every object reachable through Const --
+/// through a constant's DEFINITION when it has one, and through its DECLARED
+/// TYPE when it does not. The result is sorted and deduplicated.
+///
+/// The declared-type case is why this takes an `Environment` and not a bare
+/// definitional store. An axiomatic constant lives in `environment.signatures`
+/// with no body; a store-only walk resolved it to `None`, stopped, and
+/// reported nothing -- so a `Trusted` node hiding inside an axiom's declared
+/// type escaped the trust set entirely and the purist policy authorized a
+/// host-dependent artifact. An axiom's declared type is load-bearing (it is
+/// the only thing the kernel knows about that constant), so every trust
+/// dependency in it is one the artifact rests on.
+///
+/// The reach is deliberately the same as `basis.axioms_of`'s: a constant's
+/// body if it has one, its declared type if it does not, nothing when it
+/// resolves in neither store. Two walks over the same graph disagreeing about
+/// what is reachable would be a bug in one of them. See `follow` for the one
+/// deliberate difference, which only arises on an environment that violates
+/// `kernel.Environment`'s disjointness precondition.
+///
+/// Terminates on any graph, cyclic or not: a store is supplied by whoever is
+/// being checked, so the visited set is load-bearing rather than a
+/// belt-and-suspenders guard.
 ///
 /// This does not account for rule-set trust dependencies -- see
 /// `trust_set_with_rules` below for why that needs the kernel's own
-/// reduction rather than a static walk, and for the design decision behind
-/// splitting it into a second function instead of changing this one's
-/// signature (every existing caller of `trust_set` keeps working unchanged).
-pub fn trust_set(store: Store, t: Term) -> List(TrustPair) {
-  let #(pairs, _) = walk(store, t, [], [])
+/// reduction rather than a static walk.
+pub fn trust_set(environment: kernel.Environment, t: Term) -> List(TrustPair) {
+  let #(pairs, _) = walk(environment, t, [], [])
   pairs
   |> list.unique
   |> list.sort(compare_pair)
 }
 
 fn walk(
-  store: Store,
+  environment: kernel.Environment,
   t: Term,
   pairs: List(TrustPair),
   visited: List(Digest),
@@ -94,46 +110,72 @@ fn walk(
       let pairs = [HostTrust(host, proc), ..pairs]
       // Follow proc transitively: a host hidden inside the procedure object
       // must surface in the trust set (no under-reporting).
-      let #(pairs, visited) = follow(store, proc, pairs, visited)
-      let #(pairs, visited) = walk(store, args, pairs, visited)
-      walk(store, result_typ, pairs, visited)
+      let #(pairs, visited) = follow(environment, proc, pairs, visited)
+      let #(pairs, visited) = walk(environment, args, pairs, visited)
+      walk(environment, result_typ, pairs, visited)
     }
-    term.Const(d) -> follow(store, d, pairs, visited)
+    term.Const(d) -> follow(environment, d, pairs, visited)
     term.Var(_) | term.Sort(_) -> #(pairs, visited)
     term.Pi(a, b) | term.Lam(a, b) -> {
-      let #(pairs, visited) = walk(store, a, pairs, visited)
-      walk(store, b, pairs, visited)
+      let #(pairs, visited) = walk(environment, a, pairs, visited)
+      walk(environment, b, pairs, visited)
     }
     term.App(f, a) -> {
-      let #(pairs, visited) = walk(store, f, pairs, visited)
-      walk(store, a, pairs, visited)
+      let #(pairs, visited) = walk(environment, f, pairs, visited)
+      walk(environment, a, pairs, visited)
     }
     term.Eq(typ, a, b) -> {
-      let #(pairs, visited) = walk(store, typ, pairs, visited)
-      let #(pairs, visited) = walk(store, a, pairs, visited)
-      walk(store, b, pairs, visited)
+      let #(pairs, visited) = walk(environment, typ, pairs, visited)
+      let #(pairs, visited) = walk(environment, a, pairs, visited)
+      walk(environment, b, pairs, visited)
     }
     term.Refl(typ, a) -> {
-      let #(pairs, visited) = walk(store, typ, pairs, visited)
-      walk(store, a, pairs, visited)
+      let #(pairs, visited) = walk(environment, typ, pairs, visited)
+      walk(environment, a, pairs, visited)
     }
-    term.Hole(_, goal) -> walk(store, goal, pairs, visited)
+    term.Hole(_, goal) -> walk(environment, goal, pairs, visited)
   }
 }
 
+// Resolve a content address and keep walking. Same reach as basis.gleam's
+// `follow`, minus the axiom bookkeeping: a definition is walked as a body, an
+// axiom is walked through its declared type, and an address that resolves in
+// neither store contributes nothing (a check against such an environment
+// fails with `Unresolved` before any authorization decision matters).
+//
+// The one case where the two stores can both answer is a violation of
+// `kernel.Environment`'s documented disjointness precondition, which nothing
+// checks and which the party being checked supplies. There, both are walked.
+// The kernel resolves `signatures` first (kernel.gleam's Const cases in
+// `infer_go` and `whnf_go`) while basis.gleam resolves `definitions` first, so
+// picking either order alone would leave a digest whose other meaning is
+// load-bearing somewhere and reported nowhere -- the same under-reporting this
+// function exists to close. Walking both can only over-report, and only on an
+// environment that is already malformed.
 fn follow(
-  store: Store,
+  environment: kernel.Environment,
   d: Digest,
   pairs: List(TrustPair),
   visited: List(Digest),
 ) -> #(List(TrustPair), List(Digest)) {
   case list.contains(visited, d) {
     True -> #(pairs, visited)
-    False ->
-      case store(d) {
-        None -> #(pairs, [d, ..visited])
-        Some(def) -> walk(store, def, pairs, [d, ..visited])
+    False -> {
+      let visited = [d, ..visited]
+      case environment.signatures(d), environment.definitions(d) {
+        // An axiom: a declared type and no body. That type is the only thing
+        // the kernel knows about the constant, so every trust dependency in
+        // it is one the artifact's acceptance rests on.
+        Some(typ), None -> walk(environment, typ, pairs, visited)
+        // A definition: its own references are the artifact's dependencies too.
+        None, Some(def) -> walk(environment, def, pairs, visited)
+        Some(typ), Some(def) -> {
+          let #(pairs, visited) = walk(environment, typ, pairs, visited)
+          walk(environment, def, pairs, visited)
+        }
+        None, None -> #(pairs, visited)
       }
+    }
   }
 }
 
@@ -220,7 +262,7 @@ pub fn trust_set_with_rules(
   provenance: fn(Digest) -> List(#(kernel.RuleUse, rewrite.Rule)),
   t: Term,
 ) -> Result(List(TrustPair), kernel.TypeError) {
-  let host_pairs = trust_set(environment.definitions, t)
+  let host_pairs = trust_set(environment, t)
   use #(_, uses) <- result.try(kernel.normalize_with_uses(
     environment,
     provenance,
@@ -305,7 +347,7 @@ pub fn merge_pairs(
   t: Term,
   report: kernel.Report,
 ) -> List(TrustPair) {
-  list.append(trust_set(environment.definitions, t), pairs_of_report(report))
+  list.append(trust_set(environment, t), pairs_of_report(report))
   |> list.unique
   |> list.sort(compare_pair)
 }

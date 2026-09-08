@@ -12,17 +12,36 @@ import gleeunit/should
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
-fn no_store() -> trust.Store {
-  fn(_) { None }
-}
-
-fn make_store(entries: List(#(digest.Digest, term.Term))) -> trust.Store {
+fn make_store(entries: List(#(digest.Digest, term.Term))) -> kernel.Store {
   fn(d: digest.Digest) {
     case list.find(entries, fn(e) { e.0 == d }) {
       Ok(#(_, t)) -> Some(t)
       Error(_) -> None
     }
   }
+}
+
+/// An environment with nothing in it: no definitions, no signatures, no rules.
+fn empty_env() -> kernel.Environment {
+  kernel.environment_from_store(kernel.no_store())
+}
+
+/// An environment whose definitional store is `store` and which declares no
+/// axioms.
+fn defs_env(store: kernel.Store) -> kernel.Environment {
+  kernel.environment_from_store(store)
+}
+
+/// An environment with no definitions at all, in which every entry of
+/// `entries` is an axiom: a constant with a declared type and no body.
+fn axioms_env(
+  entries: List(#(digest.Digest, term.Term)),
+) -> kernel.Environment {
+  kernel.Environment(
+    definitions: kernel.no_store(),
+    signatures: make_store(entries),
+    rules: kernel.empty_rules(),
+  )
 }
 
 fn fake_host(b: Int) -> pubkey.PublicKey {
@@ -45,12 +64,12 @@ fn fake_proc(b: Int) -> digest.Digest {
 
 pub fn pure_term_empty_trust_set_test() {
   let t = term.Lam(term.Sort(0), term.Var(0))
-  trust.trust_set(no_store(), t)
+  trust.trust_set(empty_env(), t)
   |> should.equal([])
 }
 
 pub fn sort_empty_trust_set_test() {
-  trust.trust_set(no_store(), term.Sort(0))
+  trust.trust_set(empty_env(), term.Sort(0))
   |> should.equal([])
 }
 
@@ -60,7 +79,7 @@ pub fn own_trusted_node_test() {
   let host = fake_host(0x01)
   let proc = fake_proc(0x02)
   let t = term.Trusted(host, proc, term.Sort(0), term.Sort(0))
-  trust.trust_set(no_store(), t)
+  trust.trust_set(empty_env(), t)
   |> should.equal([trust.HostTrust(host, proc)])
 }
 
@@ -74,7 +93,7 @@ pub fn two_distinct_hosts_test() {
       term.Trusted(h1, p1, term.Sort(0), term.Sort(0)),
       term.Trusted(h2, p2, term.Sort(0), term.Sort(0)),
     )
-  let set = trust.trust_set(no_store(), t)
+  let set = trust.trust_set(empty_env(), t)
   set |> list.length |> should.equal(2)
   set |> list.contains(trust.HostTrust(h1, p1)) |> should.be_true
   set |> list.contains(trust.HostTrust(h2, p2)) |> should.be_true
@@ -86,7 +105,7 @@ pub fn duplicate_trusted_nodes_deduplicated_test() {
   let proc = fake_proc(0x02)
   let node = term.Trusted(host, proc, term.Sort(0), term.Sort(0))
   let t = term.App(node, node)
-  trust.trust_set(no_store(), t)
+  trust.trust_set(empty_env(), t)
   |> should.equal([trust.HostTrust(host, proc)])
 }
 
@@ -102,14 +121,14 @@ pub fn transitive_through_const_test() {
   let store = make_store([#(y_addr, y)])
   // X = Lam(Sort(0), Const(y_addr))
   let x = term.Lam(term.Sort(0), term.Const(y_addr))
-  trust.trust_set(store, x)
+  trust.trust_set(defs_env(store), x)
   |> should.equal([trust.HostTrust(host, proc)])
 }
 
 pub fn const_not_in_store_adds_nothing_test() {
   let d = fake_proc(0xff)
   let t = term.Const(d)
-  trust.trust_set(no_store(), t)
+  trust.trust_set(empty_env(), t)
   |> should.equal([])
 }
 
@@ -131,7 +150,7 @@ pub fn proc_reference_followed_test() {
 
   let outer_host = fake_host(0x0a)
   let root = term.Trusted(outer_host, proc_addr, term.Sort(0), term.Sort(0))
-  let set = trust.trust_set(store, root)
+  let set = trust.trust_set(defs_env(store), root)
 
   set |> list.length |> should.equal(2)
   set |> list.contains(trust.HostTrust(outer_host, proc_addr)) |> should.be_true
@@ -152,7 +171,7 @@ pub fn cycle_guard_no_infinite_loop_test() {
   let store = make_store([#(y_addr, y)])
   // App(Const(y_addr), Const(y_addr)) -- visits y twice but adds pair once
   let t = term.App(term.Const(y_addr), term.Const(y_addr))
-  trust.trust_set(store, t)
+  trust.trust_set(defs_env(store), t)
   |> should.equal([trust.HostTrust(host, proc)])
 }
 
@@ -171,7 +190,7 @@ pub fn trust_set_is_sorted_test() {
       term.Trusted(h3, p4, term.Sort(0), term.Sort(0)),
       term.Trusted(h1, p1, term.Sort(0), term.Sort(0)),
     )
-  let set = trust.trust_set(no_store(), t)
+  let set = trust.trust_set(empty_env(), t)
   set |> should.equal([trust.HostTrust(h1, p1), trust.HostTrust(h3, p4)])
 }
 
@@ -236,7 +255,7 @@ pub fn purist_denies_welltyped_host_test() {
   let store = make_store([#(proc, proc_sig)])
   let host = fake_host(0x01)
   let root = term.Trusted(host, proc, term.Sort(0), term.Sort(5))
-  let set = trust.trust_set(store, root)
+  let set = trust.trust_set(defs_env(store), root)
   // Trust set has one entry.
   set |> list.length |> should.equal(1)
   // Purist policy denies it.
@@ -561,6 +580,111 @@ pub fn verify_rule_set_signature_wrong_key_test() {
     signature: sig,
   ))
   |> should.be_false
+}
+
+// ── trust_set: transitive through an axiom's DECLARED TYPE ────────────────────
+//
+// An axiomatic constant has no definition, so it lives in
+// `environment.signatures`. A walk that consulted only `environment.definitions`
+// resolved it to None and stopped, and a Trusted node reachable only through
+// the axiom's declared type contributed nothing to the trust set -- so the
+// purist policy authorized a host-dependent artifact. These tests pin the
+// declared type as in-reach.
+
+pub fn axiom_declared_type_surfaces_host_trust_test() {
+  let host = fake_host(0x31)
+  let proc = fake_proc(0x32)
+  // `axiom : Pi (Sort 0) . <Trusted node>` -- declared type only, no body.
+  let declared =
+    term.Pi(term.Sort(0), term.Trusted(host, proc, term.Sort(0), term.Sort(0)))
+  let axiom = hash.hash(digest.Blake3, declared)
+  let environment = axioms_env([#(axiom, declared)])
+  let artifact = term.Const(axiom)
+
+  // The dependency is not visible in the artifact term at all: it is reachable
+  // only by resolving the axiom and walking what the store says its type is.
+  trust.trust_set(defs_env(kernel.no_store()), artifact) |> should.equal([])
+
+  let set = trust.trust_set(environment, artifact)
+  set |> should.equal([trust.HostTrust(host, proc)])
+
+  // The point of the fix: the purist policy now DENIES this artifact. Before,
+  // the trust set was empty and `is_authorized` returned True.
+  trust.is_authorized(set, trust.empty_policy()) |> should.be_false
+  trust.unauthorized(set, trust.empty_policy())
+  |> should.equal([trust.HostTrust(host, proc)])
+  trust.is_authorized(set, trust.policy_with_hosts([host])) |> should.be_true
+}
+
+pub fn axiom_declared_type_is_followed_transitively_test() {
+  // outer's declared type mentions inner, whose declared type hides the
+  // Trusted node: two axiom hops, no definitions anywhere.
+  let host = fake_host(0x33)
+  let proc = fake_proc(0x34)
+  let inner_typ = term.Trusted(host, proc, term.Sort(0), term.Sort(0))
+  let inner = hash.hash(digest.Blake3, inner_typ)
+  let outer_typ = term.Pi(term.Sort(0), term.Const(inner))
+  let outer = hash.hash(digest.Blake3, outer_typ)
+  let environment = axioms_env([#(inner, inner_typ), #(outer, outer_typ)])
+
+  trust.trust_set(environment, term.Const(outer))
+  |> should.equal([trust.HostTrust(host, proc)])
+}
+
+pub fn axiom_proc_signature_surfaces_inner_host_test() {
+  // The existing `proc_reference_followed_test` covers a proc object that has
+  // a definition. A pinned procedure is far more likely to be declared than
+  // defined: its type is known, its implementation is the host's business.
+  // So the inner host must surface through a proc that is an AXIOM too.
+  let inner_host = fake_host(0x35)
+  let inner_proc = fake_proc(0x36)
+  let inner = term.Trusted(inner_host, inner_proc, term.Sort(0), term.Sort(0))
+  let inner_addr = hash.hash(digest.Blake3, inner)
+  let proc_typ = term.Pi(term.Sort(0), term.Const(inner_addr))
+  let proc_addr = hash.hash(digest.Blake3, proc_typ)
+  let environment = axioms_env([#(inner_addr, inner), #(proc_addr, proc_typ)])
+
+  let outer_host = fake_host(0x37)
+  let root = term.Trusted(outer_host, proc_addr, term.Sort(0), term.Sort(0))
+  let set = trust.trust_set(environment, root)
+
+  set |> list.length |> should.equal(2)
+  set |> list.contains(trust.HostTrust(outer_host, proc_addr)) |> should.be_true
+  set
+  |> list.contains(trust.HostTrust(inner_host, inner_proc))
+  |> should.be_true
+}
+
+pub fn axiom_walk_terminates_on_a_cyclic_signature_store_test() {
+  // The signature store is supplied by the party being checked, so nothing
+  // stops two declared types referring to each other. Termination must not
+  // depend on the graph being acyclic.
+  let host = fake_host(0x38)
+  let proc = fake_proc(0x39)
+  let a = fake_proc(0x3a)
+  let b = fake_proc(0x3b)
+  let environment =
+    axioms_env([
+      #(
+        a,
+        term.Pi(
+          term.Const(b),
+          term.Trusted(host, proc, term.Sort(0), term.Sort(0)),
+        ),
+      ),
+      #(b, term.Const(a)),
+    ])
+
+  trust.trust_set(environment, term.Const(a))
+  |> should.equal([trust.HostTrust(host, proc)])
+}
+
+pub fn unresolvable_const_still_adds_nothing_test() {
+  // A Const in neither store carries no trust dependency of its own. It is a
+  // hard type error (`Unresolved`) at check time, which is where it is
+  // reported -- the trust set does not need to invent an entry for it.
+  trust.trust_set(axioms_env([]), term.Const(fake_proc(0x3c)))
+  |> should.equal([])
 }
 
 // ── FFI: Ed25519 sign/keygen (via cronch_crypto) ──────────────────────────────

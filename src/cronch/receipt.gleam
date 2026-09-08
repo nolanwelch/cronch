@@ -293,7 +293,7 @@ pub fn issue_with(
   // The static walk is available whatever happened, so a receipt always
   // records the host dependencies visible in the term itself -- even one that
   // never finished checking.
-  let static_pairs = trust.trust_set(environment.definitions, t)
+  let static_pairs = trust.trust_set(environment, t)
 
   let #(verdict, pairs, fuel_used) = case checked {
     // Reduction hit the guard. No derivation, so the trust set is necessarily
