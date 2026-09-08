@@ -91,6 +91,25 @@ pub fn empty_rules() -> RuleStore {
 /// resolution to guard against a builder bug that content-addressing
 /// already makes unlikely (an honest builder never assigns one digest two
 /// different meanings).
+///
+/// Second precondition, same standing and a sharper hazard: `definitions`
+/// and `rules` must be disjoint too -- no Digest may have both a body and a
+/// rewrite rule keyed to it. `whnf_go` resolves a `Const` by trying
+/// `signatures` (rules only), then `definitions` (delta unfold, and NO
+/// rewrite attempt), then rules. So for a digest in both, whichever one is
+/// present decides how it reduces: with the definition installed the rules
+/// keyed to that digest never fire at all, and withholding the definition
+/// brings them back. A verdict is then a function of which of two
+/// interchangeable-looking descriptions of "what this digest means" the
+/// caller happened to install, which is precisely the property a
+/// content-addressed system exists to rule out -- and it can flip a
+/// rejection into an acceptance (see kernel_test's
+/// `withholding_a_conflicting_definition_flips_reject_to_accept_test`).
+///
+/// It is likewise not checked at runtime, for the reason above: the check
+/// belongs where the environment is built, once, not on the resolution path
+/// of every `Const` in every check forever. `definition_rule_conflicts`
+/// below is that check, for a builder to call.
 pub type Environment {
   Environment(definitions: Store, signatures: SignatureStore, rules: RuleStore)
 }
@@ -104,6 +123,31 @@ pub fn environment_from_store(definitions: Store) -> Environment {
     signatures: empty_signatures(),
     rules: empty_rules(),
   )
+}
+
+/// The digests in `candidates` that violate the definitions/rules
+/// disjointness precondition: a body in `definitions` and at least one
+/// rewrite rule in `rules`. `[]` means no violation among the candidates.
+///
+/// Takes the candidates explicitly because an `Environment` is three pure
+/// functions with no key listing and cannot be enumerated. A builder knows
+/// the digests it installed; nobody else can recover them.
+///
+/// Deliberately NOT called from `whnf`, `infer` or anything they reach. A
+/// per-`Const`-resolution check would tax every lookup of every check
+/// forever to catch, once, a bug in the code that assembled the
+/// Environment -- the same trade the doc comment above declines for
+/// definitions/signatures. This is the check that code runs on itself.
+pub fn definition_rule_conflicts(
+  environment: Environment,
+  candidates: List(Digest),
+) -> List(Digest) {
+  list.filter(candidates, fn(d) {
+    case environment.definitions(d) {
+      None -> False
+      Some(_) -> environment.rules(d) != []
+    }
+  })
 }
 
 /// A typing context: a stack of variable types, Var(0)'s type at the head.
