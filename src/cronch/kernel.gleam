@@ -91,6 +91,25 @@ pub fn empty_rules() -> RuleStore {
 /// resolution to guard against a builder bug that content-addressing
 /// already makes unlikely (an honest builder never assigns one digest two
 /// different meanings).
+///
+/// Second precondition, same standing and a sharper hazard: `definitions`
+/// and `rules` must be disjoint too -- no Digest may have both a body and a
+/// rewrite rule keyed to it. `whnf_go` resolves a `Const` by trying
+/// `signatures` (rules only), then `definitions` (delta unfold, and NO
+/// rewrite attempt), then rules. So for a digest in both, whichever one is
+/// present decides how it reduces: with the definition installed the rules
+/// keyed to that digest never fire at all, and withholding the definition
+/// brings them back. A verdict is then a function of which of two
+/// interchangeable-looking descriptions of "what this digest means" the
+/// caller happened to install, which is precisely the property a
+/// content-addressed system exists to rule out -- and it can flip a
+/// rejection into an acceptance (see kernel_test's
+/// `withholding_a_conflicting_definition_flips_reject_to_accept_test`).
+///
+/// It is likewise not checked at runtime, for the reason above: the check
+/// belongs where the environment is built, once, not on the resolution path
+/// of every `Const` in every check forever. `definition_rule_conflicts`
+/// below is that check, for a builder to call.
 pub type Environment {
   Environment(definitions: Store, signatures: SignatureStore, rules: RuleStore)
 }
@@ -104,6 +123,31 @@ pub fn environment_from_store(definitions: Store) -> Environment {
     signatures: empty_signatures(),
     rules: empty_rules(),
   )
+}
+
+/// The digests in `candidates` that violate the definitions/rules
+/// disjointness precondition: a body in `definitions` and at least one
+/// rewrite rule in `rules`. `[]` means no violation among the candidates.
+///
+/// Takes the candidates explicitly because an `Environment` is three pure
+/// functions with no key listing and cannot be enumerated. A builder knows
+/// the digests it installed; nobody else can recover them.
+///
+/// Deliberately NOT called from `whnf`, `infer` or anything they reach. A
+/// per-`Const`-resolution check would tax every lookup of every check
+/// forever to catch, once, a bug in the code that assembled the
+/// Environment -- the same trade the doc comment above declines for
+/// definitions/signatures. This is the check that code runs on itself.
+pub fn definition_rule_conflicts(
+  environment: Environment,
+  candidates: List(Digest),
+) -> List(Digest) {
+  list.filter(candidates, fn(d) {
+    case environment.definitions(d) {
+      None -> False
+      Some(_) -> environment.rules(d) != []
+    }
+  })
 }
 
 /// A typing context: a stack of variable types, Var(0)'s type at the head.
@@ -193,6 +237,15 @@ pub type RuleUse {
 /// attribute a firing rule to a rule set. That attribution is a trust-layer
 /// concern, so it arrives as a separate function rather than being baked into
 /// the Environment the kernel reads.
+///
+/// For `check_reporting`/`infer_reporting` this is a TAGGING function and
+/// nothing more. Those two reduce under `environment.rules`, and consult a
+/// Provenance only to name the rule set a firing rule came from, so a caller
+/// cannot substitute the rules a verdict is computed under by passing a
+/// Provenance that disagrees with the Environment (see `attributed`).
+/// `whnf_with_uses`/`normalize_with_uses` are the deliberate exception: they
+/// are reduction-scoped tools whose question IS "what would these rules do to
+/// this term", and they decide nothing.
 pub type Provenance =
   fn(Digest) -> List(#(RuleUse, Rule))
 
@@ -249,8 +302,39 @@ fn merge(traces: List(Trace(u))) -> Trace(u) {
   )
 }
 
-fn report_of(trace: Trace(RuleUse)) -> Report {
-  Report(rule_uses: trace.uses, fuel_used: trace.steps)
+// The rule source a REPORTING call reduces under: the Environment's own
+// rules -- never the caller's -- each tagged with the RuleUse the caller's
+// Provenance attributes to it, or with the digest itself when the caller
+// attributed nothing. Same rules, same order, same reduction as `untracked`;
+// only the tag differs, so there is one reduction path and a reported verdict
+// is the plain verdict. A rule the caller offers but the Environment does not
+// hold is not here and cannot fire; a rule the Environment holds but the
+// caller did not attribute fires anyway and taints the trace.
+fn attributed(
+  environment: Environment,
+  provenance: Provenance,
+) -> fn(Digest) -> List(#(Result(RuleUse, Digest), Rule)) {
+  fn(d) {
+    let tags = provenance(d)
+    list.map(environment.rules(d), fn(rule) {
+      case list.find(tags, fn(tagged) { tagged.1 == rule }) {
+        Ok(#(rule_use, _)) -> #(Ok(rule_use), rule)
+        Error(Nil) -> #(Error(d), rule)
+      }
+    })
+  }
+}
+
+// Fail closed: a derivation in which some rule fired unattributed has no
+// honest Report, because the missing entry is exactly the one a policy would
+// have refused. Reported as the digest whose rules could not be attributed.
+fn report_of_attributed(
+  trace: Trace(Result(RuleUse, Digest)),
+) -> Result(Report, TypeError) {
+  case result.all(trace.uses) {
+    Ok(uses) -> Ok(Report(rule_uses: uses, fuel_used: trace.steps))
+    Error(d) -> Error(Unresolved(d))
+  }
 }
 
 // The provenance an untracked call uses: the Environment's own rules, each
@@ -268,6 +352,9 @@ pub type TypeError {
   ExpectedSort(Term)
   NotAFunction(Term)
   Mismatch(expected: Term, actual: Term)
+  /// A Const in neither `definitions` nor `signatures` -- or, on the
+  /// reporting path only, a digest whose rules fired unattributed by the
+  /// caller's Provenance (see `check_reporting`). Both fail closed.
   Unresolved(Digest)
   UniverseOverflow
   TrustedProcNotAType(Term)
@@ -818,11 +905,30 @@ pub fn infer_reporting(
   cx: Context,
   t: Term,
 ) -> Result(#(Term, Report), TypeError) {
-  use #(typ, trace) <- result.try(infer_go(environment, provenance, fuel, cx, t))
-  Ok(#(typ, report_of(trace)))
+  use #(typ, trace) <- result.try(infer_go(
+    environment,
+    attributed(environment, provenance),
+    fuel,
+    cx,
+    t,
+  ))
+  use report <- result.try(report_of_attributed(trace))
+  Ok(#(typ, report))
 }
 
 /// `check`, plus a Report of what the derivation did. See `infer_reporting`.
+///
+/// Reduces under `environment.rules`, exactly as plain `check` does:
+/// `provenance` names rule sets, it does not supply them. So a caller cannot
+/// have the verdict computed under one set of rules while the Basis records
+/// another, and cannot reach an acceptance here that plain `check` against
+/// the same Environment would not reach.
+///
+/// A rule that fires without `provenance` attributing it is
+/// `Error(Unresolved(d))` on the digest it was keyed to -- fail-closed,
+/// because the alternative is a Report omitting a rule set the acceptance
+/// rested on. Reachable only when a caller's Provenance disagrees with its
+/// own Environment.
 pub fn check_reporting(
   environment: Environment,
   provenance: Provenance,
@@ -833,13 +939,13 @@ pub fn check_reporting(
 ) -> Result(Report, TypeError) {
   use trace <- result.try(check_go(
     environment,
-    provenance,
+    attributed(environment, provenance),
     fuel,
     cx,
     t,
     expected,
   ))
-  Ok(report_of(trace))
+  report_of_attributed(trace)
 }
 
 fn infer_go(
