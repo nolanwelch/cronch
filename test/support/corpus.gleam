@@ -344,7 +344,7 @@ pub fn looping_artifact() -> Term {
 }
 
 pub fn looping_typ() -> Term {
-  term.Pi(term.Const(loop_const()), term.Const(loop_const()))
+  term.Pi(term.Const(loop_const()), term.Sort(0))
 }
 
 /// Every case, in a fixed order. Nothing here iterates a map or a store, so
