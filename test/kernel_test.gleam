@@ -653,3 +653,98 @@ pub fn unlimited_is_a_distinct_code_path_test() {
   kernel.whnf(environment, kernel.Unlimited, deep)
   |> should.equal(Ok(term.Sort(0)))
 }
+
+// ── def_eq's syntactic fast path ──────────────────────────────────────────────
+
+// An axiomatic constant `L : Type 2` with the rule `L --> L`. Reducing `L` at
+// all is an infinite loop, so any conversion check that has to reduce it
+// exhausts a Limited budget. This is the pathological case the fast path is
+// for: `L` is perfectly well-typed and only its *reduction* diverges.
+fn looping_env() -> #(kernel.Environment, digest.Digest) {
+  let l = fake_digest(0x5C)
+  let rule =
+    rewrite.Rule(lhs: rewrite.PConst(l), rhs: term.Const(l), var_count: 0)
+  #(
+    kernel.Environment(
+      definitions: kernel.no_store(),
+      signatures: fn(d) {
+        case d == l {
+          True -> Some(term.Sort(2))
+          False -> None
+        }
+      },
+      rules: fn(d) {
+        case d == l {
+          True -> [rule]
+          False -> []
+        }
+      },
+    ),
+    l,
+  )
+}
+
+pub fn def_eq_answers_syntactically_equal_terms_without_reducing_test() {
+  // `Term` has de Bruijn indices and no names, so `==` IS alpha-equivalence,
+  // and alpha-equivalent terms are definitionally equal by reflexivity.
+  //
+  // DELIBERATE BEHAVIOUR CHANGE: before the fast path this reduced `L`,
+  // looped, and reported Error(FuelExhausted) at every finite budget.
+  let #(environment, l) = looping_env()
+  kernel.def_eq(environment, kernel.Limited(5), term.Const(l), term.Const(l))
+  |> should.equal(Ok(True))
+
+  // Not an artifact of a generous budget: it holds at zero fuel, because no
+  // fuel is consumed.
+  kernel.def_eq(environment, kernel.Limited(0), term.Const(l), term.Const(l))
+  |> should.equal(Ok(True))
+}
+
+pub fn def_eq_still_exhausts_when_it_must_actually_reduce_test() {
+  // The fuel guard is intact: the fast path only skips work that reflexivity
+  // already settles. Two terms that are NOT syntactically equal still have to
+  // be reduced, and reducing `L` still diverges.
+  let #(environment, l) = looping_env()
+  kernel.def_eq(
+    environment,
+    kernel.Limited(5),
+    term.Pi(term.Const(l), term.Const(l)),
+    term.Pi(term.Const(l), term.Sort(0)),
+  )
+  |> should.equal(Error(kernel.FuelExhausted))
+}
+
+pub fn check_takes_the_fast_path_through_its_conversion_test() {
+  // `lam (x : L) => x` against `L -> L`. The inferred type is syntactically
+  // the declared one, so the conversion check is settled by reflexivity and
+  // the check accepts a term it used to report FuelExhausted for.
+  let #(environment, l) = looping_env()
+  kernel.check(
+    environment,
+    kernel.Limited(5),
+    empty(),
+    term.Lam(term.Const(l), term.Var(0)),
+    term.Pi(term.Const(l), term.Const(l)),
+  )
+  |> should.equal(Ok(Nil))
+}
+
+pub fn the_fast_path_records_no_steps_and_no_rule_uses_test() {
+  // The trace the fast path returns is empty because that is the honest
+  // record: no beta, no delta, no rule application happened. `fuel_used` is
+  // documented as "the number of reduction steps the derivation performed",
+  // and this derivation performed none.
+  let #(environment, l) = looping_env()
+  let tag =
+    kernel.RuleUse(author: fake_pubkey(0x11), rule_set: fake_digest(0x12))
+  let provenance = fn(d) { list.map(environment.rules(d), fn(r) { #(tag, r) }) }
+  kernel.check_reporting(
+    environment,
+    provenance,
+    kernel.Limited(5),
+    empty(),
+    term.Lam(term.Const(l), term.Var(0)),
+    term.Pi(term.Const(l), term.Const(l)),
+  )
+  |> should.equal(Ok(kernel.Report(rule_uses: [], fuel_used: 0)))
+}

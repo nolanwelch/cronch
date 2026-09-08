@@ -739,6 +739,20 @@ fn normalize_go(
 /// Definitional equality: whnf both sides, then compare heads structurally.
 /// Up to beta, delta, and rewrite rules. No eta in v0.
 /// Trusted nodes compare structurally: equal host/proc and def_eq args/result_typ.
+///
+/// Syntactically identical terms are answered `Ok(True)` without reducing
+/// anything. `Term` carries de Bruijn indices and no names, so `==` on two
+/// terms IS alpha-equivalence, and alpha-equivalent terms are definitionally
+/// equal by reflexivity -- there is nothing for a reduction to discover.
+///
+/// DELIBERATE BEHAVIOUR CHANGE: a comparison of two equal terms whose
+/// reduction would have exhausted `Limited` fuel used to report
+/// `Error(FuelExhausted)` and now reports `Ok(True)`. That is the intended
+/// direction. FuelExhausted is a termination guard, not a judgement (see the
+/// Fuel doc comment); answering a question we can settle by reflexivity is
+/// strictly more informative than refusing to answer it, it can only ever
+/// turn a non-verdict into `True` and never a `False` into a `True`, and the
+/// answer no longer depends on how much budget the caller happened to pass.
 pub fn def_eq(
   environment: Environment,
   fuel: Fuel,
@@ -756,6 +770,27 @@ pub fn def_eq(
 }
 
 fn def_eq_go(
+  environment: Environment,
+  provenance: fn(Digest) -> List(#(u, Rule)),
+  fuel: Fuel,
+  a: Term,
+  b: Term,
+) -> Result(#(Bool, Trace(u)), TypeError) {
+  case a == b {
+    // The fast path. The trace is empty because it is honest: no beta, delta
+    // or rule application happened, so there is no step to count and no rule
+    // set to attribute. That is exactly what `Report.fuel_used` documents
+    // itself to be -- "the number of reduction steps the derivation
+    // performed" -- so a check that takes this path reports a smaller
+    // fuel_used than it used to, for work it genuinely no longer does.
+    True -> Ok(#(True, empty_trace()))
+    False -> def_eq_reduced(environment, provenance, fuel, a, b)
+  }
+}
+
+// The general case: reduce both sides to whnf, then compare heads. Reached
+// only when the two terms are not already syntactically equal.
+fn def_eq_reduced(
   environment: Environment,
   provenance: fn(Digest) -> List(#(u, Rule)),
   fuel: Fuel,
